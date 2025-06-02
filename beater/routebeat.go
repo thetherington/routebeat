@@ -5,24 +5,25 @@ import (
 	"time"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
-	"github.com/elastic/beats/v7/libbeat/common"
-	"github.com/elastic/beats/v7/libbeat/logp"
+	"github.com/elastic/elastic-agent-libs/config"
+	"github.com/elastic/elastic-agent-libs/logp"
+	"github.com/elastic/elastic-agent-libs/mapstr"
 
-	"github.com/thetherington/routebeat/config"
+	routeCfg "github.com/thetherington/routebeat/config"
 )
 
 // routebeat configuration.
 type routebeat struct {
 	done   chan struct{}
-	config config.Config
+	config routeCfg.Config
 	client beat.Client
 }
 
 // New creates an instance of routebeat.
-func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
-	c := config.DefaultConfig
+func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
+	c := routeCfg.DefaultConfig
 	if err := cfg.Unpack(&c); err != nil {
-		return nil, fmt.Errorf("Error reading config file: %v", err)
+		return nil, fmt.Errorf("error reading config file: %v", err)
 	}
 
 	bt := &routebeat{
@@ -53,11 +54,12 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 
 		event := beat.Event{
 			Timestamp: time.Now(),
-			Fields: common.MapStr{
+			Fields: mapstr.M{
 				"type":    b.Info.Name,
 				"counter": counter,
 			},
 		}
+
 		bt.client.Publish(event)
 		logp.Info("Event sent")
 		counter++

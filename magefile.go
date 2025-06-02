@@ -13,7 +13,6 @@ import (
 	devtools "github.com/elastic/beats/v7/dev-tools/mage"
 	"github.com/elastic/beats/v7/dev-tools/mage/target/build"
 	"github.com/elastic/beats/v7/dev-tools/mage/target/common"
-	"github.com/elastic/beats/v7/dev-tools/mage/target/pkg"
 	"github.com/elastic/beats/v7/dev-tools/mage/target/unittest"
 )
 
@@ -33,11 +32,12 @@ func Package() {
 	start := time.Now()
 	defer func() { fmt.Println("package ran for", time.Since(start)) }()
 
-	devtools.UseCommunityBeatPackaging()
+	// devtools.UseCommunityBeatPackaging()
+	devtools.UseElasticBeatOSSPackaging()
 
 	mg.Deps(Update)
 	mg.Deps(build.CrossBuild, build.CrossBuildGoDaemon)
-	mg.SerialDeps(devtools.Package, pkg.PackageTest)
+	mg.SerialDeps(devtools.Package)
 }
 
 // Update updates the generated files (aka make update).
