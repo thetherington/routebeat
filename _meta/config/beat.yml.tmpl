@@ -4,4 +4,25 @@
 
 routebeat:
   # Defines how often an event is sent to the output
-  period: 1s
+  period: 30s
+
+  # Tags to collect route data from
+  tags:
+    - "MES"
+    - "IPAN"
+
+  # Magnum API
+  api:
+    url: "https://129.153.131.121/graphql/v1.1"
+    
+    # Get route notifications via the subscriptions
+    notifications: true
+
+    # Limit the number of destinations in the API query results
+    limit: 2000
+    
+    # Magnum OIDC Authentication
+    auth:
+      client_id: "insite-poller"
+      client_secret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd"
+      token_url: "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token"
