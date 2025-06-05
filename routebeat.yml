@@ -4,17 +4,26 @@
 
 routebeat:
   # Defines how often an event is sent to the output
-  period: 1000s
+  period: 10s
 
   # Tags to collect route data from
   tags:
     - "MES"
     - "IPAN"
 
+  # (optional) Nameset to select from for the "source" and "destination", value and default value for emptry route
+  nameset:
+    value: "Broadview"
+    default: ""
+
   # Magnum API
   api:
     url: "https://129.153.131.121/graphql/v1.1"
+    
+    # Get route notifications via the subscriptions
     notifications: true
+
+    # Limit the number of destinations in the API query results
     limit: 2000
     
     # Magnum OIDC Authentication

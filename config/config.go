@@ -18,10 +18,16 @@ type MagnumAPI struct {
 	Auth          MagnumOIDCAuth `config:"auth"`
 }
 
+type Nameset struct {
+	Value   string `config:"value"`
+	Default string `config:"default"`
+}
+
 type Config struct {
-	Period time.Duration `config:"period"`
-	Tags   []string      `config:"tags"`
-	API    MagnumAPI     `config:"api"`
+	Period  time.Duration `config:"period"`
+	Tags    []string      `config:"tags"`
+	Nameset Nameset       `config:"nameset"`
+	API     MagnumAPI     `config:"api"`
 }
 
 var DefaultConfig = Config{

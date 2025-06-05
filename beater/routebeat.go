@@ -180,7 +180,7 @@ func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, d
 		}
 
 		// process results
-		bt.ProcessResults(tag, query.Terminals.Edges, Query)
+		bt.BuildEvents(tag, query.Terminals.Edges, Query)
 	}
 }
 
@@ -205,7 +205,7 @@ func (bt *routebeat) SubscribeTerminals(query any, tag string) (string, error) {
 			return nil
 		}
 
-		bt.ProcessResults(tag, data.TerminalsUpdated, Notification)
+		bt.BuildEvents(tag, data.TerminalsUpdated, Notification)
 
 		return nil
 	})
@@ -218,13 +218,15 @@ func (bt *routebeat) SubscribeTerminals(query any, tag string) (string, error) {
 	return id, nil
 }
 
-func (bt *routebeat) ProcessResults(tag string, edges []Edge, eventType EventType) {
+// Builds beat events based on the Edge{} struct definition
+func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) {
 	logp.Debug("ProcessResults", "Query Results for Tag: %s, Total Edges:%d, EventType %s", tag, len(edges), eventType)
 
 	var (
-		events    []beat.Event
-		processed int
-		discarded int
+		events        []beat.Event
+		processed     int
+		discarded     int
+		staticNameset bool = bt.config.Nameset.Value != ""
 	)
 
 	for _, edge := range edges {
@@ -239,17 +241,23 @@ func (bt *routebeat) ProcessResults(tag string, edges []Edge, eventType EventTyp
 		event := beat.Event{
 			Timestamp: time.Now(),
 			Fields: mapstr.M{
-				"id":      edge.Id,
-				"name":    edge.Name,
-				"dstType": edge.Type,
-				"isSub":   edge.IsSub,
-				"isDst":   edge.IsDst,
-				"type":    eventType.String(),
-				"tags":    edge.Tags,
-				"tag":     tag,
-				"nameset": mapstr.M{},
-				"source":  mapstr.M{},
+				"id":                edge.Id,
+				"name":              edge.Name,
+				"dstType":           edge.Type,
+				"isSub":             edge.IsSub,
+				"isDst":             edge.IsDst,
+				"type":              eventType.String(),
+				"tags":              edge.Tags,
+				"tag":               tag,
+				"nameset":           mapstr.M{},
+				"routeableTerminal": mapstr.M{},
 			},
+		}
+
+		// update the event fields on whether the source configuration exists
+		if staticNameset {
+			event.PutValue("source", bt.config.Nameset.Default)
+			event.PutValue("destination", findNamesetValueByName(bt.config.Nameset.Value, edge.NamesetNames, bt.config.Nameset.Default))
 		}
 
 		// put in the nameset name and value "event.nameset.<nameset name>"
@@ -262,14 +270,15 @@ func (bt *routebeat) ProcessResults(tag string, edges []Edge, eventType EventTyp
 
 		// destination has not physical source or subscribed source
 		if edge.RoutedPhysicalSource == nil && edge.SubscribedSource == nil {
-			switch eventType {
-			case Query:
-				event.Delete("source")
+			event.Delete("routeableTerminal")
 
-			case Notification:
-				discarded++
-				continue
-			}
+			// switch eventType {
+			// case Query:
+
+			// case Notification:
+			// 	discarded++
+			// 	continue
+			// }
 		}
 
 		// create a nested object for the RoutePhysicalSource
@@ -278,8 +287,18 @@ func (bt *routebeat) ProcessResults(tag string, edges []Edge, eventType EventTyp
 				"name":  edge.RoutedPhysicalSource.Name,
 				"isSrc": edge.RoutedPhysicalSource.IsSrc,
 			}
+
 			rangeOverNamesets(edge.RoutedPhysicalSource.NamesetNames, &m)
-			event.PutValue("source.physicalSource", m)
+
+			event.PutValue("routeableTerminal.physicalSource", m)
+
+			if staticNameset {
+				event.PutValue("source", findNamesetValueByName(
+					bt.config.Nameset.Value,
+					edge.RoutedPhysicalSource.NamesetNames,
+					bt.config.Nameset.Default,
+				))
+			}
 		}
 
 		// create a nested object for the SubscribedSource
@@ -288,8 +307,18 @@ func (bt *routebeat) ProcessResults(tag string, edges []Edge, eventType EventTyp
 				"name":  edge.SubscribedSource.Name,
 				"isSub": edge.SubscribedSource.IsSub,
 			}
+
 			rangeOverNamesets(edge.SubscribedSource.NamesetNames, &m)
-			event.PutValue("source.subscribedSource", m)
+
+			event.PutValue("routeableTerminal.subscribedSource", m)
+
+			if staticNameset {
+				event.PutValue("source", findNamesetValueByName(
+					bt.config.Nameset.Value,
+					edge.SubscribedSource.NamesetNames,
+					bt.config.Nameset.Default,
+				))
+			}
 		}
 
 		events = append(events, event)

@@ -25,3 +25,13 @@ func rangeOverNamesets(namesetName []NamesetName, m *mapstr.M) {
 		)
 	}
 }
+
+func findNamesetValueByName(s string, namesetName []NamesetName, defaultValue string) string {
+	for _, n := range namesetName {
+		if n.Nameset.Name == s {
+			return n.Name
+		}
+	}
+
+	return defaultValue
+}

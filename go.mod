@@ -32,11 +32,13 @@ require (
 	github.com/cavaliergopher/rpm v1.3.0
 	github.com/elastic/beats/v7 v7.17.29-0.20250528095053-c7b51806263b
 	github.com/elastic/elastic-agent-libs v0.19.6
+	github.com/hasura/go-graphql-client v0.14.3
 	github.com/magefile/mage v1.15.0
 	github.com/mitchellh/gox v1.0.1
 	github.com/pierrre/gotestcover v0.0.0-20160517101806-924dca7d15f0
 	github.com/tsg/go-daemon v0.0.0-20200207173439-e704b93fd89b
 	golang.org/x/lint v0.0.0-20241112194109-818c5a804067
+	golang.org/x/oauth2 v0.30.0
 	golang.org/x/tools v0.33.0
 	gotest.tools/gotestsum v1.12.2
 )
@@ -127,7 +129,6 @@ require (
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
 	github.com/hashicorp/go-version v1.7.0 // indirect
-	github.com/hasura/go-graphql-client v0.14.3 // indirect
 	github.com/imdario/mergo v0.3.16 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jcmturner/aescts/v2 v2.0.0 // indirect
@@ -190,7 +191,6 @@ require (
 	golang.org/x/crypto v0.38.0 // indirect
 	golang.org/x/mod v0.24.0 // indirect
 	golang.org/x/net v0.40.0 // indirect
-	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/sync v0.14.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/term v0.32.0 // indirect
