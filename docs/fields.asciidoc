@@ -15674,15 +15674,123 @@ type: text
 None
 
 
-*`counter`*::
+*`dstId`*::
 +
 --
-PLEASE UPDATE DOCUMENTATION
+Magnum Destination ID
 
 
-type: long
+type: keyword
 
-required: True
+required: False
+
+--
+
+*`dstName`*::
++
+--
+Magnum Destination Name
+
+
+type: keyword
+
+required: False
+
+--
+
+*`dstIsSub`*::
++
+--
+Magnum Destination Is a Destination
+
+
+type: boolean
+
+required: False
+
+--
+
+*`dstType`*::
++
+--
+Magnum Destination Type
+
+
+type: keyword
+
+required: False
+
+--
+
+*`dstTag`*::
++
+--
+Tag value used in GraphQL query
+
+
+type: keyword
+
+required: False
+
+--
+
+*`eventType`*::
++
+--
+Type of event query, notification or log
+
+
+type: keyword
+
+required: False
+
+--
+
+*`destinationLabel`*::
++
+--
+Mapped nameset value for destination
+
+
+type: keyword
+
+required: False
+
+--
+
+*`sourceLabel`*::
++
+--
+Mapped nameset value for source
+
+
+type: keyword
+
+required: False
+
+--
+
+*`dstNameset`*::
++
+--
+Nameset for the destination
+
+
+type: object
+
+required: False
+
+--
+
+*`routeableTerminal`*::
++
+--
+Terminal Routeable information
+
+
+type: object
+
+required: False
 
 --
 

@@ -10,9 +10,9 @@ routebeat:
   tags:
     - "<Magnum Tag>"
 
-  ## (optional) Nameset to select from for the "source" value and default value for no route
-  # nameset:
-  #  value: "<nameset>"
+  ## (optional) Nameset to select from for the "source" and "destination", value and default value for emptry route
+  # mapping:
+  #  nameset: "<nameset>"
   #  default: ""
 
   # Magnum API

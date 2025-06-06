@@ -58,6 +58,11 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		return nil, errors.New("beat requires atleast 1 tag in the configuration")
 	}
 
+	// Validate if mapping is enabled then the nameset is not blank
+	if c.Mapping != nil && c.Mapping.Nameset == "" {
+		return nil, errors.New("nameset cannot be blank if mapping is enabled")
+	}
+
 	done := make(chan struct{})
 
 	// create generic http client interface and authenticate with magnum
@@ -223,10 +228,10 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 	logp.Debug("ProcessResults", "Query Results for Tag: %s, Total Edges:%d, EventType %s", tag, len(edges), eventType)
 
 	var (
-		events        []beat.Event
-		processed     int
-		discarded     int
-		staticNameset bool = bt.config.Nameset.Value != ""
+		events    []beat.Event
+		processed int
+		discarded int
+		mapping   bool = bt.config.Mapping != nil
 	)
 
 	for _, edge := range edges {
@@ -241,44 +246,36 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 		event := beat.Event{
 			Timestamp: time.Now(),
 			Fields: mapstr.M{
-				"id":                edge.Id,
-				"name":              edge.Name,
+				"dstId":             edge.Id,
+				"dstName":           edge.Name,
+				"dstIsSub":          edge.IsSub,
+				"dstIsDst":          edge.IsDst,
 				"dstType":           edge.Type,
-				"isSub":             edge.IsSub,
-				"isDst":             edge.IsDst,
-				"type":              eventType.String(),
-				"tags":              edge.Tags,
-				"tag":               tag,
-				"nameset":           mapstr.M{},
+				"dstTags":           edge.Tags,
+				"dstTag":            tag,
+				"dstNameset":        mapstr.M{},
+				"eventType":         eventType.String(),
 				"routeableTerminal": mapstr.M{},
 			},
-		}
-
-		// update the event fields on whether the source configuration exists
-		if staticNameset {
-			event.PutValue("source", bt.config.Nameset.Default)
-			event.PutValue("destination", findNamesetValueByName(bt.config.Nameset.Value, edge.NamesetNames, bt.config.Nameset.Default))
 		}
 
 		// put in the nameset name and value "event.nameset.<nameset name>"
 		for _, n := range edge.NamesetNames {
 			event.PutValue(
-				fmt.Sprintf("nameset.%s", strings.ToLower(n.Nameset.Name)),
+				fmt.Sprintf("dstNameset.%s", strings.ToLower(n.Nameset.Name)),
 				n.Name,
 			)
 		}
 
-		// destination has not physical source or subscribed source
-		if edge.RoutedPhysicalSource == nil && edge.SubscribedSource == nil {
-			event.Delete("routeableTerminal")
+		// create "source" and "destination" keys in the event if mapping is enabled
+		if mapping {
+			event.PutValue("destinationLabel", findNamesetValueByName(
+				bt.config.Mapping.Nameset,
+				edge.NamesetNames,
+				bt.config.Mapping.Default),
+			)
 
-			// switch eventType {
-			// case Query:
-
-			// case Notification:
-			// 	discarded++
-			// 	continue
-			// }
+			event.PutValue("sourceLabel", bt.config.Mapping.Default)
 		}
 
 		// create a nested object for the RoutePhysicalSource
@@ -292,11 +289,11 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 			event.PutValue("routeableTerminal.physicalSource", m)
 
-			if staticNameset {
-				event.PutValue("source", findNamesetValueByName(
-					bt.config.Nameset.Value,
+			if mapping {
+				event.PutValue("sourceLabel", findNamesetValueByName(
+					bt.config.Mapping.Nameset,
 					edge.RoutedPhysicalSource.NamesetNames,
-					bt.config.Nameset.Default,
+					bt.config.Mapping.Default,
 				))
 			}
 		}
@@ -312,13 +309,18 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 			event.PutValue("routeableTerminal.subscribedSource", m)
 
-			if staticNameset {
-				event.PutValue("source", findNamesetValueByName(
-					bt.config.Nameset.Value,
+			if mapping {
+				event.PutValue("sourceLabel", findNamesetValueByName(
+					bt.config.Mapping.Nameset,
 					edge.SubscribedSource.NamesetNames,
-					bt.config.Nameset.Default,
+					bt.config.Mapping.Default,
 				))
 			}
+		}
+
+		// destination has no physical source or subscribed source then remove the key
+		if edge.RoutedPhysicalSource == nil && edge.SubscribedSource == nil {
+			event.Delete("routeableTerminal")
 		}
 
 		events = append(events, event)
@@ -327,8 +329,9 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 	}
 
 	// if len(events) > 0 {
-	// 	fmt.Printf("%+v\n", events[0])
+	// 	fmt.Printf("\n%+v\n\n", events[0])
 	// }
+
 	bt.client.PublishAll(events)
 
 	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, EventType: %s", tag, processed, discarded, eventType)

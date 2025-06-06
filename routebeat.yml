@@ -4,7 +4,7 @@
 
 routebeat:
   # Defines how often an event is sent to the output
-  period: 10s
+  period: 30s
 
   # Tags to collect route data from
   tags:
@@ -12,8 +12,8 @@ routebeat:
     - "IPAN"
 
   # (optional) Nameset to select from for the "source" and "destination", value and default value for emptry route
-  nameset:
-    value: "Broadview"
+  mapping:
+    nameset: "Broadview"
     default: ""
 
   # Magnum API

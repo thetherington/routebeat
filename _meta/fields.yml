@@ -2,8 +2,60 @@
   title: routebeat
   description:
   fields:
-    - name: counter
-      type: long
-      required: true
+    - name: dstId
+      type: keyword
+      required: false
       description: >
-        PLEASE UPDATE DOCUMENTATION
+        Magnum Destination ID
+    - name: dstName
+      type: keyword
+      required: false
+      description: >
+        Magnum Destination Name
+    - name: dstIsSub
+      type: boolean
+      required: false
+      description: >
+        Magnum Destination Is a Subscription
+    - name: dstIsSub
+      type: boolean
+      required: false
+      description: >
+        Magnum Destination Is a Destination
+    - name: dstType
+      type: keyword
+      required: false
+      description: >
+        Magnum Destination Type
+    - name: dstTag
+      type: keyword
+      required: false
+      description: >
+        Tag value used in GraphQL query
+    - name: eventType
+      type: keyword
+      required: false
+      description: >
+        Type of event query, notification or log
+    - name: destinationLabel
+      type: keyword
+      required: false
+      description: >
+        Mapped nameset value for destination
+    - name: sourceLabel
+      type: keyword
+      required: false
+      description: >
+        Mapped nameset value for source
+    - name: dstNameset
+      type: object
+      required: false
+      dynamic: true
+      description: >
+        Nameset for the destination
+    - name: routeableTerminal
+      type: object
+      required: false
+      dynamic: true
+      description: >
+        Terminal Routeable information
