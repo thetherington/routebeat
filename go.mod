@@ -87,7 +87,9 @@ require (
 	github.com/elastic/elastic-agent-autodiscover v0.9.0 // indirect
 	github.com/elastic/elastic-agent-client/v7 v7.17.2 // indirect
 	github.com/elastic/elastic-agent-system-metrics v0.11.11 // indirect
+	github.com/elastic/elastic-transport-go/v8 v8.7.0 // indirect
 	github.com/elastic/go-concert v0.3.0 // indirect
+	github.com/elastic/go-elasticsearch/v8 v8.18.0 // indirect
 	github.com/elastic/go-lumber v0.1.2-0.20220819171948-335fde24ea0f // indirect
 	github.com/elastic/go-seccomp-bpf v1.5.0 // indirect
 	github.com/elastic/go-structform v0.0.12 // indirect

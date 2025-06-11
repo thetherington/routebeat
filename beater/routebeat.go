@@ -16,6 +16,7 @@ import (
 	"github.com/hasura/go-graphql-client"
 	"github.com/hasura/go-graphql-client/pkg/jsonutil"
 
+	"github.com/thetherington/routebeat/beater/db"
 	"github.com/thetherington/routebeat/beater/httpclient"
 	routeCfg "github.com/thetherington/routebeat/config"
 )
@@ -44,6 +45,7 @@ type routebeat struct {
 	httpClient *http.Client
 	subClient  *graphql.SubscriptionClient
 	subIds     []string
+	dbClient   db.SearchInterface
 }
 
 // New creates an instance of routebeat.
@@ -61,6 +63,15 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 	// Validate if mapping is enabled then the nameset is not blank
 	if c.Mapping != nil && c.Mapping.Nameset == "" {
 		return nil, errors.New("nameset cannot be blank if mapping is enabled")
+	}
+
+	// Create the elasticsearch client handler
+	dbClient, err := db.NewClient(&db.ClientConfig{
+		Address: c.ES.Address,
+		Index:   c.ES.Index,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create elasticsearch client: %w", err)
 	}
 
 	done := make(chan struct{})
@@ -81,6 +92,7 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		done:       done,
 		config:     c,
 		httpClient: client,
+		dbClient:   dbClient,
 		subIds:     make([]string, 0),
 	}
 

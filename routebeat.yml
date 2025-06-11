@@ -31,6 +31,13 @@ routebeat:
       client_id: "insite-poller"
       client_secret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd"
       token_url: "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token"
+
+  elasticsearch:
+    # Elasticsearch server node url
+    address: "http://127.0.0.1:9200"
+
+    # Index pattern to query for scheduler data
+    index: "log-magnum-scheduler-*"
 # ================================== General ===================================
 
 # The name of the shipper that publishes the network data. It can be used to group

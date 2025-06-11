@@ -23,11 +23,17 @@ type Mapping struct {
 	Default string `config:"default"`
 }
 
+type Elasticsearch struct {
+	Address string `config:"address"`
+	Index   string `config:"index"`
+}
+
 type Config struct {
 	Period  time.Duration `config:"period"`
 	Tags    []string      `config:"tags"`
 	Mapping *Mapping      `config:"mapping"`
 	API     MagnumAPI     `config:"api"`
+	ES      Elasticsearch `config:"elasticsearch"`
 }
 
 var DefaultConfig = Config{
@@ -42,5 +48,9 @@ var DefaultConfig = Config{
 			ClientSecret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd",
 			TokenURL:     "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token",
 		},
+	},
+	ES: Elasticsearch{
+		Address: "http://127.0.0.1:9200",
+		Index:   "log-magnum-scheduler-*",
 	},
 }
