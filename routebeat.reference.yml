@@ -15,6 +15,12 @@ routebeat:
   #  nameset: "<nameset>"
   #  default: ""
 
+  # TDA default source
+  tda: ""
+
+  # Zorro source
+  zorro: ""
+
   # Magnum API
   api:
     url: "https://<IP>/graphql/v1.1"
@@ -37,6 +43,9 @@ routebeat:
 
     # Index pattern to query for scheduler data
     index: "log-magnum-scheduler-*"
+
+    # Defines how often the schedule event params is fetched 
+    period: 5m
 # ================================== General ===================================
 
 # The name of the shipper that publishes the network data. It can be used to group

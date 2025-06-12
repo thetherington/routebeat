@@ -24,8 +24,9 @@ type Mapping struct {
 }
 
 type Elasticsearch struct {
-	Address string `config:"address"`
-	Index   string `config:"index"`
+	Address string        `config:"address"`
+	Index   string        `config:"index"`
+	Period  time.Duration `config:"period"`
 }
 
 type Config struct {
@@ -34,6 +35,8 @@ type Config struct {
 	Mapping *Mapping      `config:"mapping"`
 	API     MagnumAPI     `config:"api"`
 	ES      Elasticsearch `config:"elasticsearch"`
+	TDA     string        `config:"tda"`
+	Zorro   string        `config:"zorro"`
 }
 
 var DefaultConfig = Config{
@@ -52,5 +55,6 @@ var DefaultConfig = Config{
 	ES: Elasticsearch{
 		Address: "http://127.0.0.1:9200",
 		Index:   "log-magnum-scheduler-*",
+		Period:  5 * time.Minute,
 	},
 }

@@ -16,26 +16,15 @@ import (
 	"github.com/hasura/go-graphql-client"
 	"github.com/hasura/go-graphql-client/pkg/jsonutil"
 
-	"github.com/thetherington/routebeat/beater/db"
+	insite "github.com/thetherington/routebeat/beater/analytics"
 	"github.com/thetherington/routebeat/beater/httpclient"
 	routeCfg "github.com/thetherington/routebeat/config"
 )
 
-type EventType int
-
-const (
-	Query EventType = iota
-	Notification
+var (
+	db    insite.SearchInterface
+	cache = NewCacheMap[string, *insite.BusRouting]()
 )
-
-var eventName = map[EventType]string{
-	Query:        "query",
-	Notification: "notification",
-}
-
-func (et EventType) String() string {
-	return eventName[et]
-}
 
 // routebeat configuration.
 type routebeat struct {
@@ -45,7 +34,6 @@ type routebeat struct {
 	httpClient *http.Client
 	subClient  *graphql.SubscriptionClient
 	subIds     []string
-	dbClient   db.SearchInterface
 }
 
 // New creates an instance of routebeat.
@@ -66,12 +54,18 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 	}
 
 	// Create the elasticsearch client handler
-	dbClient, err := db.NewClient(&db.ClientConfig{
+	var err error
+	db, err = insite.NewClient(&insite.ClientConfig{
 		Address: c.ES.Address,
 		Index:   c.ES.Index,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create elasticsearch client: %w", err)
+	}
+
+	// update the cache from insite on startup
+	if err := updateBusNameCache(); err != nil {
+		logp.Err("%v", err)
 	}
 
 	done := make(chan struct{})
@@ -92,7 +86,6 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		done:       done,
 		config:     c,
 		httpClient: client,
-		dbClient:   dbClient,
 		subIds:     make([]string, 0),
 	}
 
@@ -108,6 +101,26 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	if err != nil {
 		return err
 	}
+
+	// start the elasticsearch query routine (5 minutes default)
+	go func() {
+		ticker := time.NewTicker(bt.config.ES.Period)
+
+		for {
+			select {
+			case <-bt.done:
+				logp.Warn("exiting elasticsearch QueryScheduler() routine")
+			case <-ticker.C:
+			}
+
+			if err := updateBusNameCache(); err != nil {
+				logp.Err("%v", err)
+				continue
+			}
+
+			logp.Debug("QueryScheduler", "cache updated with %d keys", len(cache.store))
+		}
+	}()
 
 	// create the graphql query client
 	queryClient := graphql.NewClient(bt.config.API.Url, bt.httpClient)
@@ -160,6 +173,10 @@ func (bt *routebeat) Stop() {
 		}
 	}
 
+	// Stops go routines:
+	//   - magnum token refresh
+	//   - elasticsearch scheduleQuery
+	//   - exits beat run function
 	close(bt.done)
 }
 

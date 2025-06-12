@@ -15,6 +15,12 @@ routebeat:
   mapping:
     nameset: "Broadview"
     default: ""
+  
+  # TDA default source
+  tda: ""
+
+  # Zorro source
+  zorro: ""
 
   # Magnum API
   api:
@@ -38,3 +44,6 @@ routebeat:
 
     # Index pattern to query for scheduler data
     index: "log-magnum-scheduler-*"
+
+    # Defines how often the schedule event params is fetched 
+    period: 5m

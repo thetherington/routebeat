@@ -1,8 +1,9 @@
-package db
+package analytics
 
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
@@ -11,7 +12,7 @@ import (
 )
 
 type SearchInterface interface {
-	QueryScheduler(ctx context.Context) (BusMap, error)
+	QuerySchedulerEventParams() (map[string]*BusRouting, error)
 }
 
 type ESSearch struct {
@@ -60,7 +61,10 @@ func NewClient(cfg *ClientConfig) (SearchInterface, error) {
 	}, nil
 }
 
-func (es *ESSearch) QueryScheduler(ctx context.Context) (BusMap, error) {
+func (es *ESSearch) QuerySchedulerEventParams() (map[string]*BusRouting, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
 	// send query
 	resp, err := es.client.Search().Index(es.index).Request(es.request).Do(ctx)
 	if err != nil {

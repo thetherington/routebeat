@@ -35,3 +35,14 @@ func findNamesetValueByName(s string, namesetName []NamesetName, defaultValue st
 
 	return defaultValue
 }
+
+func updateBusNameCache() error {
+	bm, err := db.QuerySchedulerEventParams()
+	if err != nil || len(bm) == 0 {
+		return fmt.Errorf("failed QueryScheduler(): %v", err)
+	}
+
+	cache.Load(bm)
+
+	return nil
+}

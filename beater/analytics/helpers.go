@@ -1,4 +1,4 @@
-package db
+package analytics
 
 import (
 	"fmt"
@@ -14,10 +14,6 @@ var fieldMap = map[string]string{
 }
 
 func StringPtr(s string) *string { return &s }
-
-type NestedAggregate struct {
-	Aggregations map[string]types.Aggregate
-}
 
 func processBucketsIntoBusMap(buckets []types.StringTermsBucket) BusMap {
 	busMap := make(BusMap, 0)

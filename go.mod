@@ -32,6 +32,7 @@ require (
 	github.com/cavaliergopher/rpm v1.3.0
 	github.com/elastic/beats/v7 v7.17.29-0.20250528095053-c7b51806263b
 	github.com/elastic/elastic-agent-libs v0.19.6
+	github.com/elastic/go-elasticsearch/v8 v8.18.0
 	github.com/hasura/go-graphql-client v0.14.3
 	github.com/magefile/mage v1.15.0
 	github.com/mitchellh/gox v1.0.1
@@ -89,7 +90,6 @@ require (
 	github.com/elastic/elastic-agent-system-metrics v0.11.11 // indirect
 	github.com/elastic/elastic-transport-go/v8 v8.7.0 // indirect
 	github.com/elastic/go-concert v0.3.0 // indirect
-	github.com/elastic/go-elasticsearch/v8 v8.18.0 // indirect
 	github.com/elastic/go-lumber v0.1.2-0.20220819171948-335fde24ea0f // indirect
 	github.com/elastic/go-seccomp-bpf v1.5.0 // indirect
 	github.com/elastic/go-structform v0.0.12 // indirect
