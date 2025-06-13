@@ -22,8 +22,8 @@ type ESSearch struct {
 }
 
 type BusRouting struct {
-	Pri *string
-	Sec *string
+	Pri string
+	Sec string
 }
 
 type BusMap map[string]*BusRouting

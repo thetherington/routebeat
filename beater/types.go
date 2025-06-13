@@ -23,6 +23,27 @@ func (et EventType) String() string {
 	return eventName[et]
 }
 
+// RoutingState is a small enum
+type RoutingState int
+
+const (
+	Primary RoutingState = iota
+	Backup
+	Zorro
+	TDA
+)
+
+var routingName = map[RoutingState]string{
+	Primary: "Primary",
+	Backup:  "Backup",
+	Zorro:   "Zorro",
+	TDA:     "TDA",
+}
+
+func (rs RoutingState) String() string {
+	return routingName[rs]
+}
+
 // generic, thread-safe cache
 type CacheMap[K comparable, V any] struct {
 	mu    sync.RWMutex

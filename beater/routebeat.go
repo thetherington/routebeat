@@ -63,11 +63,6 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		return nil, fmt.Errorf("failed to create elasticsearch client: %w", err)
 	}
 
-	// update the cache from insite on startup
-	if err := updateBusNameCache(); err != nil {
-		logp.Err("%v", err)
-	}
-
 	done := make(chan struct{})
 
 	// create generic http client interface and authenticate with magnum
@@ -107,18 +102,20 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		ticker := time.NewTicker(bt.config.ES.Period)
 
 		for {
+			bm, err := db.QuerySchedulerEventParams()
+			if err != nil || len(bm) == 0 {
+				logp.Err("failed QueryScheduler(): %v", err)
+			}
+
+			cache.Load(bm)
+
+			logp.Debug("QueryScheduler", "cache updated with %d keys", len(cache.store))
+
 			select {
 			case <-bt.done:
 				logp.Warn("exiting elasticsearch QueryScheduler() routine")
 			case <-ticker.C:
 			}
-
-			if err := updateBusNameCache(); err != nil {
-				logp.Err("%v", err)
-				continue
-			}
-
-			logp.Debug("QueryScheduler", "cache updated with %d keys", len(cache.store))
 		}
 	}()
 
@@ -176,6 +173,7 @@ func (bt *routebeat) Stop() {
 	// Stops go routines:
 	//   - magnum token refresh
 	//   - elasticsearch scheduleQuery
+	//   - query terminals routine
 	//   - exits beat run function
 	close(bt.done)
 }
@@ -257,10 +255,14 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 	logp.Debug("ProcessResults", "Query Results for Tag: %s, Total Edges:%d, EventType %s", tag, len(edges), eventType)
 
 	var (
-		events    []beat.Event
-		processed int
-		discarded int
-		mapping   bool = bt.config.Mapping != nil
+		processed int    // counter for any routes with matched exact tag
+		discarded int    // counter for any routes with unmatched exact tag
+		unmatched int    // counter for any destinations not in the cache
+		dstLabel  string // broadview destination label
+		srcLabel  string // broadview source label
+
+		events  []beat.Event
+		mapping bool = bt.config.Mapping != nil
 	)
 
 	for _, edge := range edges {
@@ -273,7 +275,8 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 		// build basic event from query payload
 		event := beat.Event{
-			Timestamp: time.Now(),
+			Timestamp:  time.Now(),
+			TimeSeries: false,
 			Fields: mapstr.M{
 				"dstId":             edge.Id,
 				"dstName":           edge.Name,
@@ -282,9 +285,10 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 				"dstType":           edge.Type,
 				"dstTags":           edge.Tags,
 				"dstTag":            tag,
-				"dstNameset":        mapstr.M{},
 				"eventType":         eventType.String(),
+				"dstNameset":        mapstr.M{},
 				"routeableTerminal": mapstr.M{},
+				"schedule":          mapstr.M{},
 			},
 		}
 
@@ -298,12 +302,13 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 		// create "source" and "destination" keys in the event if mapping is enabled
 		if mapping {
-			event.PutValue("destinationLabel", findNamesetValueByName(
+			dstLabel = findNamesetValueByName(
 				bt.config.Mapping.Nameset,
 				edge.NamesetNames,
-				bt.config.Mapping.Default),
+				bt.config.Mapping.Default,
 			)
 
+			event.PutValue("destinationLabel", dstLabel)
 			event.PutValue("sourceLabel", bt.config.Mapping.Default)
 		}
 
@@ -339,17 +344,50 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			event.PutValue("routeableTerminal.subscribedSource", m)
 
 			if mapping {
-				event.PutValue("sourceLabel", findNamesetValueByName(
+				srcLabel = findNamesetValueByName(
 					bt.config.Mapping.Nameset,
 					edge.SubscribedSource.NamesetNames,
 					bt.config.Mapping.Default,
-				))
+				)
+
+				event.PutValue("sourceLabel", srcLabel)
 			}
 		}
 
 		// destination has no physical source or subscribed source then remove the key
 		if edge.RoutedPhysicalSource == nil && edge.SubscribedSource == nil {
 			event.Delete("routeableTerminal")
+		}
+
+		// validate the route with the schedule cacheMap
+		if routing, ok := cache.Get(dstLabel); ok && routing != nil {
+			fmt.Printf("\nDestination:%s Source:%s\n%+v\n", dstLabel, srcLabel, routing)
+
+			switch srcLabel {
+			case routing.Pri:
+				event.PutValue("schedule.status", Primary.String())
+
+			case routing.Sec:
+				event.PutValue("schedule.status", Backup.String())
+
+			case bt.config.Zorro:
+				event.PutValue("schedule.status", Zorro.String())
+
+			case bt.config.TDA:
+				event.PutValue("schedule.status", TDA.String())
+
+			default:
+				event.PutValue("schedule.status", "UnscheduledAudio")
+			}
+
+			event.PutValue("schedule.matched", true)
+			event.PutValue("schedule.buscode", dstLabel)
+			event.PutValue("schedule.primary", routing.Pri)
+			event.PutValue("schedule.backup", routing.Sec)
+
+		} else {
+			event.PutValue("schedule.matched", false)
+			unmatched++
 		}
 
 		events = append(events, event)
@@ -363,5 +401,5 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 	bt.client.PublishAll(events)
 
-	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, EventType: %s", tag, processed, discarded, eventType)
+	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, Unmatched: %d EventType: %s", tag, processed, discarded, unmatched, eventType)
 }

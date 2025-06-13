@@ -46,11 +46,11 @@ func processBucketsIntoBusMap(buckets []types.StringTermsBucket) BusMap {
 			}
 
 			if v, ok := topAgg.Top[0].Metrics[fieldMap["pri_src"]]; ok {
-				busMap[key].Pri = StringPtr(v.(string))
+				busMap[key].Pri = v.(string)
 			}
 
 			if v, ok := topAgg.Top[0].Metrics[fieldMap["sec_src"]]; ok {
-				busMap[key].Sec = StringPtr(v.(string))
+				busMap[key].Sec = v.(string)
 			}
 		}
 	}
@@ -78,7 +78,22 @@ func createQuery() *types.Query {
 		},
 	})
 
-	// TODO filter for current event time range from start_time / end_time
+	// filter for current event time range from start_time / end_time
+	mustBoolSlice = append(mustBoolSlice, types.Query{
+		Range: map[string]types.RangeQuery{
+			"scheduler.schedule.end_date": types.DateRangeQuery{
+				Gte: StringPtr("now"),
+			},
+		},
+	})
+
+	mustBoolSlice = append(mustBoolSlice, types.Query{
+		Range: map[string]types.RangeQuery{
+			"scheduler.schedule.start_date": types.DateRangeQuery{
+				Lte: StringPtr("now"),
+			},
+		},
+	})
 
 	// return the Bool query
 	return &types.Query{
