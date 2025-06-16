@@ -20,6 +20,10 @@ import (
 	routeCfg "github.com/thetherington/routebeat/config"
 )
 
+const (
+	CLIENT_TIMEOUT = 10 // time in seconds
+)
+
 type EventType int
 
 const (
@@ -170,11 +174,18 @@ func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, d
 
 		var query QueryTerminals
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		err := func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), CLIENT_TIMEOUT*time.Second)
+			defer cancel()
 
-		if err := client.Query(ctx, &query, variables); err != nil {
-			logp.Err("error query failed for Tag: %s: %v", tag, err)
+			if err := client.Query(ctx, &query, variables); err != nil {
+				return fmt.Errorf("error query failed for Tag: %s: %v", tag, err)
+			}
+
+			return nil
+		}()
+		if err != nil {
+			logp.Err(err.Error())
 			continue
 		}
 
