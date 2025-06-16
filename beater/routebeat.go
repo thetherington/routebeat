@@ -21,6 +21,11 @@ import (
 	routeCfg "github.com/thetherington/routebeat/config"
 )
 
+const (
+	CLIENT_TIMEOUT    = 10 // time in seconds
+	ANALYTICS_TIMEOUT = 10
+)
+
 var (
 	db    insite.SearchInterface
 	cache = NewCacheMap[string, *insite.BusRouting]()
@@ -102,7 +107,12 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		ticker := time.NewTicker(bt.config.ES.Period)
 
 		for {
-			bm, err := db.QuerySchedulerEventParams()
+			bm, err := func() (map[string]*insite.BusRouting, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), ANALYTICS_TIMEOUT*time.Second)
+				defer cancel()
+
+				return db.QuerySchedulerEventParams(ctx)
+			}()
 			if err != nil || len(bm) == 0 {
 				logp.Err("failed QueryScheduler(): %v", err)
 			}
@@ -197,11 +207,18 @@ func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, d
 
 		var query QueryTerminals
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		err := func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), CLIENT_TIMEOUT*time.Second)
+			defer cancel()
 
-		if err := client.Query(ctx, &query, variables); err != nil {
-			logp.Err("error query failed for Tag: %s: %v", tag, err)
+			if err := client.Query(ctx, &query, variables); err != nil {
+				return fmt.Errorf("error query failed for Tag: %s: %v", tag, err)
+			}
+
+			return nil
+		}()
+		if err != nil {
+			logp.Err(err.Error())
 			continue
 		}
 

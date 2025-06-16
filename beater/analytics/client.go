@@ -3,7 +3,6 @@ package analytics
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
@@ -12,7 +11,7 @@ import (
 )
 
 type SearchInterface interface {
-	QuerySchedulerEventParams() (map[string]*BusRouting, error)
+	QuerySchedulerEventParams(context.Context) (map[string]*BusRouting, error)
 }
 
 type ESSearch struct {
@@ -61,10 +60,7 @@ func NewClient(cfg *ClientConfig) (SearchInterface, error) {
 	}, nil
 }
 
-func (es *ESSearch) QuerySchedulerEventParams() (map[string]*BusRouting, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
+func (es *ESSearch) QuerySchedulerEventParams(ctx context.Context) (map[string]*BusRouting, error) {
 	// send query
 	resp, err := es.client.Search().Index(es.index).Request(es.request).Do(ctx)
 	if err != nil {
