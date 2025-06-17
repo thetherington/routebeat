@@ -135,6 +135,7 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 			select {
 			case <-bt.done:
 				logp.Warn("exiting elasticsearch QueryScheduler() routine")
+				return
 			case <-ticker.C:
 			}
 		}
@@ -144,15 +145,20 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 
-		select {
-		case <-bt.done:
-			logp.Warn("exiting busCache save to file routine")
-			busCache.SaveToFile(BUSCACHE_FILE)
-		case <-ticker.C:
-		}
+		for {
+			select {
+			case <-bt.done:
+				logp.Warn("exiting busCache save to file routine")
+				if err := busCache.SaveToFile(BUSCACHE_FILE); err != nil {
+					logp.Err("failed to save busCache to file: %v", err)
+				}
+				return
+			case <-ticker.C:
+			}
 
-		if err := busCache.SaveToFile(BUSCACHE_FILE); err != nil {
-			logp.Err("failed to save busCache to file: %v", err)
+			if err := busCache.SaveToFile(BUSCACHE_FILE); err != nil {
+				logp.Err("failed to save busCache to file: %v", err)
+			}
 		}
 	}()
 
