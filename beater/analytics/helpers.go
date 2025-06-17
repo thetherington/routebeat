@@ -65,7 +65,7 @@ func createQuery() *types.Query {
 	mustBoolSlice = append(mustBoolSlice, types.Query{
 		Range: map[string]types.RangeQuery{
 			"@timestamp": types.DateRangeQuery{
-				From: StringPtr("now-1h"),
+				From: StringPtr("now-12h"),
 				To:   StringPtr("now"),
 			},
 		},

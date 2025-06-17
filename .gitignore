@@ -5,3 +5,4 @@
 /routebeat
 /routebeat.test
 *.pyc
+busCache.gob

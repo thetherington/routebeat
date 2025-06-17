@@ -1,9 +1,10 @@
 package beater
 
-import (
-	"encoding/gob"
-	"os"
-	"sync"
+import "errors"
+
+var (
+	ErrEdgeTagNotFound     = errors.New("tag not found in edge tags list")
+	ErrScheduleBusNotFound = errors.New("buscode not found in schedule busmap cache")
 )
 
 // EventType is a small enum
@@ -12,11 +13,13 @@ type EventType int
 const (
 	Query EventType = iota
 	Notification
+	Summary
 )
 
 var eventName = map[EventType]string{
 	Query:        "query",
 	Notification: "notification",
+	Summary:      "summary",
 }
 
 func (et EventType) String() string {
@@ -27,10 +30,12 @@ func (et EventType) String() string {
 type RoutingState int
 
 const (
-	Primary RoutingState = iota
+	Unknown RoutingState = iota
+	Primary
 	Backup
 	Zorro
 	TDA
+	Unsched
 )
 
 var routingName = map[RoutingState]string{
@@ -38,85 +43,70 @@ var routingName = map[RoutingState]string{
 	Backup:  "Backup",
 	Zorro:   "Zorro",
 	TDA:     "TDA",
+	Unsched: "UnscheduledAudio",
+	Unknown: "unknown",
 }
 
 func (rs RoutingState) String() string {
 	return routingName[rs]
 }
 
-// generic, thread-safe cache
-type CacheMap[K comparable, V any] struct {
-	mu    sync.RWMutex
-	store map[K]V
+// Summary struct
+type Counters struct {
+	Tag     string
+	Primary RoutingState
+	Backup  RoutingState
+	Zorro   RoutingState
+	Tda     RoutingState
+	Unsched RoutingState
 }
 
-// NewCacheMap initializes and returns a new cache
-func NewCacheMap[K comparable, V any]() *CacheMap[K, V] {
-	return &CacheMap[K, V]{
-		store: make(map[K]V),
+func (s *Counters) Increment(field RoutingState) {
+	switch field {
+	case Primary:
+		s.Primary++
+	case Backup:
+		s.Backup++
+	case Zorro:
+		s.Zorro++
+	case TDA:
+		s.Tda++
+	case Unsched:
+		s.Unsched++
 	}
 }
 
-// Get retrieves a value from the cache and a boolean if found
-func (c *CacheMap[K, V]) Get(key K) (V, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	val, ok := c.store[key]
-
-	return val, ok
+// Blend merges the values from another Counter into the current one.
+func (c *Counters) Merge(value *Counters) {
+	c.Primary += value.Primary
+	c.Backup += value.Backup
+	c.Zorro += value.Zorro
+	c.Tda += value.Tda
+	c.Unsched += value.Unsched
 }
 
-// Set adds or updates a value in the cache
-func (c *CacheMap[K, V]) Set(key K, value V) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.store[key] = value
-}
-
-// Delete removes a key from the cache
-func (c *CacheMap[K, V]) Delete(key K) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	delete(c.store, key)
-}
-
-// Load replaces the store with a new map
-func (c *CacheMap[K, V]) Load(m map[K]V) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.store = m
-}
-
-// SaveToFile persists the cache map to disk using gob
-func (c *CacheMap[K, V]) SaveToFile(filename string) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
+func (s *Counters) Decrement(field RoutingState) {
+	switch field {
+	case Primary:
+		s.Primary--
+	case Backup:
+		s.Backup--
+	case Zorro:
+		s.Zorro--
+	case TDA:
+		s.Tda--
+	case Unsched:
+		s.Unsched--
 	}
-	defer file.Close()
-
-	enc := gob.NewEncoder(file)
-	return enc.Encode(c.store)
 }
 
-// LoadFromFile loads the cache map from disk using gob
-func (c *CacheMap[K, V]) LoadFromFile(filename string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+type BusState struct {
+	State RoutingState
+}
 
-	file, err := os.Open(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	dec := gob.NewDecoder(file)
-	return dec.Decode(&c.store)
+// SwapState replaces the State and returns the old state
+func (bs *BusState) SwapState(rs RoutingState) RoutingState {
+	temp := bs.State
+	bs.State = rs
+	return temp
 }
