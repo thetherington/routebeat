@@ -79,6 +79,9 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		logp.Info("Loaded busCache length: %d keys", busCache.Length())
 	}
 
+	// debugging/development
+	// scheduleCache.LoadFromFile("scheduleCache.gob")
+
 	done := make(chan struct{})
 
 	// create generic http client interface and authenticate with magnum
@@ -215,6 +218,9 @@ func (bt *routebeat) Stop() {
 			logp.Err("error unsubscribing from graphql query with id: %s", id)
 		}
 	}
+
+	// debugging/development
+	// scheduleCache.SaveToFile("scheduleCache.gob")
 
 	// Stops go routines:
 	//   - magnum token refresh
@@ -516,17 +522,51 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	// update the busState cache if the bus code doesn't exist
 	// otherwise swap the current state and save the previous state
 	busCache.Do(func(c *cache.CacheMap[string, *BusState]) {
-		if v, ok := c.Store[dstLabel]; !ok {
-			c.Store[dstLabel] = &BusState{State: currentState}
-		} else {
+		if v, ok := c.Store[dstLabel]; ok {
 			prevState = v.SwapState(currentState)
+			return
 		}
+
+		c.Store[dstLabel] = NewBusState(currentState)
 	})
 
-	// only create a negative counter value for Notification events
-	// and if the state has actually changed
-	if (eventType == Notification) && (prevState != currentState) {
-		counters.Decrement(prevState)
+	// check if there's a there's a transition
+	if prevState != currentState {
+		// perform this in a mutex lock - for concurrency reasons
+		busCache.DoMut(dstLabel, func(value *BusState) {
+			// only set the transition time when the transition is nil and the state is not primary
+			if (value.Transition == nil) && (currentState != Primary) {
+				event.PutValue("schedule.deviationStartTime", value.SetTransitionTime(time.Now()))
+			}
+
+			if eventType == Notification {
+				counters.Decrement(prevState)
+
+				// handle when the state
+				event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr())
+
+				// if the state has switched to primary and this is a notification,
+				// then update the deviation end time.
+				if currentState == Primary {
+					// reset the time for a new transition to occur
+					event.PutValue("schedule.deviationEndTime", value.ResetTransition())
+				}
+			}
+		})
+	}
+
+	// for queries get the transition start time or "-" incase the notification already processed state change
+	// also heal the transition state if in a defunct state
+	if eventType == Query {
+		busCache.DoMut(dstLabel, func(value *BusState) {
+			// recover the transition if in a defunct state. must call this 3x times to self heal
+			if value.IsDefunctTransition() {
+				logp.Warn("Busname: %s has a defunct transition", dstLabel)
+				value.CorrectDefunctTransition()
+			}
+
+			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr())
+		})
 	}
 
 	return &event, nil

@@ -6,3 +6,4 @@
 /routebeat.test
 *.pyc
 busCache.gob
+scheduleCache.gob

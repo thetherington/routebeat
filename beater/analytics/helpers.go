@@ -65,7 +65,7 @@ func createQuery() *types.Query {
 	mustBoolSlice = append(mustBoolSlice, types.Query{
 		Range: map[string]types.RangeQuery{
 			"@timestamp": types.DateRangeQuery{
-				From: StringPtr("now-12h"),
+				From: StringPtr("now-4h"),
 				To:   StringPtr("now"),
 			},
 		},
@@ -148,7 +148,7 @@ func createAggregations() map[string]types.Aggregations {
 				Order: map[string]sortorder.SortOrder{
 					"_key": sortorder.Asc,
 				},
-				Size: esapi.IntPtr(200),
+				Size: esapi.IntPtr(2000),
 			},
 			Aggregations: subAgg,
 		},
