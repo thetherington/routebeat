@@ -117,53 +117,10 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	}
 
 	// start the elasticsearch query routine (5 minutes default)
-	go func() {
-		ticker := time.NewTicker(bt.config.ES.Period)
-
-		for {
-			bm, err := func() (map[string]*insite.BusRouting, error) {
-				ctx, cancel := context.WithTimeout(context.Background(), ANALYTICS_TIMEOUT*time.Second)
-				defer cancel()
-
-				return db.QuerySchedulerEventParams(ctx)
-			}()
-			if err != nil || len(bm) == 0 {
-				logp.Err("failed QueryScheduler(): %v", err)
-			}
-
-			scheduleCache.Load(bm)
-
-			logp.Debug("QueryScheduler", "cache updated with %d keys", scheduleCache.Length())
-
-			select {
-			case <-bt.done:
-				logp.Warn("exiting elasticsearch QueryScheduler() routine")
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
+	go AnalyticsQueryGoRoutine(bt.config.ES.Period, bt.done)
 
 	// go routine to save the busCache to file every 10 minutes incase of a crash
-	go func() {
-		ticker := time.NewTicker(10 * time.Minute)
-
-		for {
-			select {
-			case <-bt.done:
-				logp.Warn("exiting busCache save to file routine")
-				if err := busCache.SaveToFile(BUSCACHE_FILE); err != nil {
-					logp.Err("failed to save busCache to file: %v", err)
-				}
-				return
-			case <-ticker.C:
-			}
-
-			if err := busCache.SaveToFile(BUSCACHE_FILE); err != nil {
-				logp.Err("failed to save busCache to file: %v", err)
-			}
-		}
-	}()
+	go SaveBusCacheGoRoutine(bt.done)
 
 	// create the graphql query client
 	queryClient := graphql.NewClient(bt.config.API.Url, bt.httpClient)
@@ -173,13 +130,22 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		// set counters cache for query
 		countersCache.Set(tag, &Counters{})
 
+		// run the query routine in the background
 		go bt.QueryTerminalsRoutine(queryClient, tag, bt.done)
 	}
 
 	// create the subscription client whether it's needed or not
-	bt.subClient = graphql.NewSubscriptionClient(getWssURL(bt.config.API.Url)).
+	bt.subClient = graphql.
+		NewSubscriptionClient(getWssURL(bt.config.API.Url)).
 		WithWebSocketOptions(graphql.WebsocketOptions{
 			HTTPClient: bt.httpClient,
+		}).
+		OnError(func(sc *graphql.SubscriptionClient, err error) error {
+			logp.Err("subscription client OnError: %v", err)
+			return nil
+		}).
+		OnDisconnected(func() {
+			logp.Warn("subscription client disconnected")
 		})
 	defer bt.subClient.Close()
 
@@ -198,8 +164,8 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 			bt.subIds = append(bt.subIds, subscriptionId)
 		}
 
-		// start the subscriptions in the background
-		go bt.subClient.Run()
+		// start the subscriptions in the background make it reconnect on connnection lost
+		go bt.SubscriptionClientRun()
 	}
 
 	// block here until the application is terminated
@@ -227,6 +193,7 @@ func (bt *routebeat) Stop() {
 	//   - elasticsearch scheduleQuery
 	//   - busCache.SaveToFile
 	//   - query terminals routine
+	//   - subscription run reconnect routine
 	//   - exits beat run function
 	close(bt.done)
 }
@@ -308,6 +275,28 @@ func (bt *routebeat) SubscribeTerminals(query any, tag string) (string, error) {
 	logp.Info("Subscrition made for Tag: %s with Sub ID: %s", tag, id)
 
 	return id, nil
+}
+
+func (bt *routebeat) SubscriptionClientRun() {
+	for {
+		select {
+		case <-bt.done:
+			logp.Warn("exiting GraphQL subscription client Run() routine")
+			return
+		default:
+		}
+
+		if err := bt.subClient.Run(); err != nil {
+			logp.Err("subscription client Run error: %v", err)
+		}
+
+		if len(bt.subClient.GetSubscriptions()) == 0 {
+			logp.Warn("exiting GraphQL subscription client Run() routine")
+			return
+		}
+
+		logp.Info("subscription client reconnect/re-run")
+	}
 }
 
 // Builds beat events based on the Edge{} struct definition
