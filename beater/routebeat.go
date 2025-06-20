@@ -110,9 +110,17 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	}
 
 	// create the subscription client whether it's needed or not
-	bt.subClient = graphql.NewSubscriptionClient(getWssURL(bt.config.API.Url)).
+	bt.subClient = graphql.
+		NewSubscriptionClient(getWssURL(bt.config.API.Url)).
 		WithWebSocketOptions(graphql.WebsocketOptions{
 			HTTPClient: bt.httpClient,
+		}).
+		OnError(func(sc *graphql.SubscriptionClient, err error) error {
+			logp.Err("subscription client OnError: %v", err)
+			return err
+		}).
+		OnDisconnected(func() {
+			logp.Warn("subscription client disconnected")
 		})
 	defer bt.subClient.Close()
 
@@ -131,8 +139,8 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 			bt.subIds = append(bt.subIds, subscriptionId)
 		}
 
-		// start the subscriptions in the background
-		go bt.subClient.Run()
+		// start the subscriptions in the background make it reconnect on connnection lost
+		go bt.SubscriptionClientRun()
 	}
 
 	// block here until the application is terminated
@@ -153,6 +161,28 @@ func (bt *routebeat) Stop() {
 	}
 
 	close(bt.done)
+}
+
+func (bt *routebeat) SubscriptionClientRun() {
+	for {
+		select {
+		case <-bt.done:
+			logp.Warn("exiting GraphQL subscription client Run() routine")
+			return
+		default:
+		}
+
+		if err := bt.subClient.Run(); err != nil {
+			logp.Err("subscription client Run error: %v", err)
+		}
+
+		if len(bt.subClient.GetSubscriptions()) == 0 {
+			logp.Warn("exiting GraphQL subscription client Run() routine")
+			return
+		}
+
+		logp.Info("subscription client reconnect/re-run")
+	}
 }
 
 func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, done chan struct{}) {
@@ -178,14 +208,10 @@ func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, d
 			ctx, cancel := context.WithTimeout(context.Background(), CLIENT_TIMEOUT*time.Second)
 			defer cancel()
 
-			if err := client.Query(ctx, &query, variables); err != nil {
-				return fmt.Errorf("error query failed for Tag: %s: %v", tag, err)
-			}
-
-			return nil
+			return client.Query(ctx, &query, variables)
 		}()
 		if err != nil {
-			logp.Err(err.Error())
+			logp.Err("error query failed for Tag: %s: %v", tag, err)
 			continue
 		}
 
@@ -209,7 +235,6 @@ func (bt *routebeat) SubscribeTerminals(query any, tag string) (string, error) {
 	// subscribe to a query and run a callback function to process the messages
 	id, err := bt.subClient.Subscribe(query, v, func(message []byte, err error) error {
 		if err != nil {
-			logp.Err("error making subscription query or callback %v", err)
 			return err
 		}
 
