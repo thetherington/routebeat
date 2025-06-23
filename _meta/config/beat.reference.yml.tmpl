@@ -46,3 +46,14 @@ routebeat:
 
     # Defines how often the schedule event params is fetched 
     period: 5m
+
+    # developer settings to save/load cache
+    dev:
+      # load a local copy of the schedule cache (scheduleCache.gob)
+      load_cache: false
+
+      # save a the schedule cache on shutdown (scheduleCache.gob)
+      save_cache: false 
+      
+      # validate the end date
+      skip_end_date: false

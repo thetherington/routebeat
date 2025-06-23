@@ -15794,4 +15794,174 @@ required: False
 
 --
 
+
+*`counters.Primary`*::
++
+--
+Number of destinations on the primary schedule source
+
+
+type: integer
+
+required: False
+
+--
+
+*`counters.Backup`*::
++
+--
+Number of destinations on the backup schedule source
+
+
+type: integer
+
+required: False
+
+--
+
+*`counters.Zorro`*::
++
+--
+Number of destinations on the Zorro static source
+
+
+type: integer
+
+required: False
+
+--
+
+*`counters.TDA`*::
++
+--
+Number of destinations on the TDA static source
+
+
+type: integer
+
+required: False
+
+--
+
+*`counters.UnscheduledAudio`*::
++
+--
+Number of destinations on a unschedule audio source
+
+
+type: integer
+
+required: False
+
+--
+
+*`counters.processed`*::
++
+--
+Number of destinations processed
+
+
+type: integer
+
+required: False
+
+--
+
+*`counters.unmatched`*::
++
+--
+Number of destinations unmatched to the schedule
+
+
+type: integer
+
+required: False
+
+--
+
+
+*`schedule.buscode`*::
++
+--
+Schedule buscode
+
+
+type: keyword
+
+required: False
+
+--
+
+*`schedule.status`*::
++
+--
+Schedule status state
+
+
+type: keyword
+
+required: False
+
+--
+
+*`schedule.primary`*::
++
+--
+Schedule primary source
+
+
+type: keyword
+
+required: False
+
+--
+
+*`schedule.backup`*::
++
+--
+Schedule backup source
+
+
+type: keyword
+
+required: False
+
+--
+
+*`schedule.matched`*::
++
+--
+matched status with the schedule
+
+
+type: boolean
+
+required: False
+
+--
+
+*`schedule.deviationStartTime`*::
++
+--
+start timestamp of when the status changed happened
+
+
+type: keyword
+
+required: False
+
+--
+
+*`schedule.deviationEndTime`*::
++
+--
+end timestamp of when the status restored happened
+
+
+type: keyword
+
+required: False
+
+--
+
 :edit_url!:

@@ -40,7 +40,7 @@ routebeat:
 
   elasticsearch:
     # Elasticsearch server node url
-    address: "http://10.9.0.69:9200"
+    address: "http://127.0.0.1:9200"
 
     # Index pattern to query for scheduler data
     index: "log-magnum-scheduler-*"
@@ -109,13 +109,13 @@ setup.kibana:
 # Configure what output to use when sending the data collected by the beat.
 
 # ---------------------------- Elasticsearch Output ----------------------------
-# output.elasticsearch:
+output.elasticsearch:
   # Array of hosts to connect to.
-  # hosts: ["10.9.0.69:9200"]
+  hosts: ["localhost:9200"]
 
   # Performance preset - one of "balanced", "throughput", "scale",
   # "latency", or "custom".
-  # preset: balanced
+  preset: balanced
 
   # Protocol - either `http` (default) or `https`.
   #protocol: "https"
@@ -126,9 +126,9 @@ setup.kibana:
   #password: "changeme"
 
 # ------------------------------ Logstash Output -------------------------------
-output.logstash:
+#output.logstash:
   # The Logstash hosts
-  hosts: ["10.9.0.69:5057"]
+  #hosts: ["localhost:5044"]
 
   # Optional SSL. By default is off.
   # List of root certificates for HTTPS server verifications

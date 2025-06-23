@@ -11137,3 +11137,79 @@
       dynamic: true
       description: >
         Terminal Routeable information
+    - name: counters
+      type: group
+      fields: 
+        - name: Primary
+          type: integer
+          required: false
+          description: >
+            Number of destinations on the primary schedule source
+        - name: Backup
+          type: integer
+          required: false
+          description: >
+            Number of destinations on the backup schedule source
+        - name: Zorro
+          type: integer
+          required: false
+          description: >
+            Number of destinations on the Zorro static source
+        - name: TDA
+          type: integer
+          required: false
+          description: >
+            Number of destinations on the TDA static source
+        - name: UnscheduledAudio
+          type: integer
+          required: false
+          description: >
+            Number of destinations on a unschedule audio source
+        - name: processed
+          type: integer
+          required: false
+          description: >
+            Number of destinations processed
+        - name: unmatched
+          type: integer
+          required: false
+          description: >
+            Number of destinations unmatched to the schedule
+    - name: schedule
+      type: group
+      fields: 
+        - name: buscode
+          type: keyword
+          required: false
+          description: >
+            Schedule buscode
+        - name: status
+          type: keyword
+          required: false
+          description: >
+            Schedule status state
+        - name: primary
+          type: keyword
+          required: false
+          description: >
+            Schedule primary source
+        - name: backup
+          type: keyword
+          required: false
+          description: >
+            Schedule backup source
+        - name: matched
+          type: boolean
+          required: false
+          description: >
+            matched status with the schedule
+        - name: deviationStartTime
+          type: keyword
+          required: false
+          description: >
+            start timestamp of when the status changed happened
+        - name: deviationEndTime
+          type: keyword
+          required: false
+          description: >
+            end timestamp of when the status restored happened

@@ -23,10 +23,17 @@ type Mapping struct {
 	Default string `config:"default"`
 }
 
+type Developer struct {
+	LoadCache   bool `config:"load_cache"`
+	SaveCache   bool `config:"save_cache"`
+	SkipEndDate bool `config:"skip_end_date"`
+}
+
 type Elasticsearch struct {
 	Address string        `config:"address"`
 	Index   string        `config:"index"`
 	Period  time.Duration `config:"period"`
+	Dev     Developer     `config:"dev"`
 }
 
 type Config struct {
@@ -56,5 +63,10 @@ var DefaultConfig = Config{
 		Address: "http://127.0.0.1:9200",
 		Index:   "log-magnum-scheduler-*",
 		Period:  5 * time.Minute,
+		Dev: Developer{
+			LoadCache:   false,
+			SkipEndDate: false,
+			SaveCache:   false,
+		},
 	},
 }

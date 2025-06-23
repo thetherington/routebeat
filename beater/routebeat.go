@@ -26,6 +26,7 @@ const (
 	CLIENT_TIMEOUT    = 10 // time in seconds
 	ANALYTICS_TIMEOUT = 10
 	BUSCACHE_FILE     = "busCache.gob"
+	SCHEDCACHE_FILE   = "scheduleCache.gob"
 )
 
 var (
@@ -80,7 +81,9 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 	}
 
 	// debugging/development
-	// scheduleCache.LoadFromFile("scheduleCache.gob")
+	if c.ES.Dev.LoadCache {
+		scheduleCache.LoadFromFile(SCHEDCACHE_FILE)
+	}
 
 	done := make(chan struct{})
 
@@ -117,7 +120,9 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	}
 
 	// start the elasticsearch query routine (5 minutes default)
-	go AnalyticsQueryGoRoutine(bt.config.ES.Period, bt.done)
+	if !bt.config.ES.Dev.LoadCache {
+		go AnalyticsQueryGoRoutine(bt.config.ES.Period, bt.done)
+	}
 
 	// go routine to save the busCache to file every 10 minutes incase of a crash
 	go SaveBusCacheGoRoutine(bt.done)
@@ -142,7 +147,7 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		}).
 		OnError(func(sc *graphql.SubscriptionClient, err error) error {
 			logp.Err("subscription client OnError: %v", err)
-			return nil
+			return err
 		}).
 		OnDisconnected(func() {
 			logp.Warn("subscription client disconnected")
@@ -186,7 +191,9 @@ func (bt *routebeat) Stop() {
 	}
 
 	// debugging/development
-	// scheduleCache.SaveToFile("scheduleCache.gob")
+	if bt.config.ES.Dev.SaveCache {
+		scheduleCache.SaveToFile(SCHEDCACHE_FILE)
+	}
 
 	// Stops go routines:
 	//   - magnum token refresh
@@ -221,14 +228,10 @@ func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, d
 			ctx, cancel := context.WithTimeout(context.Background(), CLIENT_TIMEOUT*time.Second)
 			defer cancel()
 
-			if err := client.Query(ctx, &query, variables); err != nil {
-				return fmt.Errorf("error query failed for Tag: %s: %v", tag, err)
-			}
-
-			return nil
+			return client.Query(ctx, &query, variables)
 		}()
 		if err != nil {
-			logp.Err(err.Error())
+			logp.Err("error query failed for Tag: %s: %v", tag, err)
 			continue
 		}
 
@@ -252,7 +255,6 @@ func (bt *routebeat) SubscribeTerminals(query any, tag string) (string, error) {
 	// subscribe to a query and run a callback function to process the messages
 	id, err := bt.subClient.Subscribe(query, v, func(message []byte, err error) error {
 		if err != nil {
-			logp.Err("error making subscription query or callback %v", err)
 			return err
 		}
 
@@ -349,15 +351,17 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			Timestamp:  time.Now(),
 			TimeSeries: false,
 			Fields: mapstr.M{
-				"eventType":      Summary.String(),
-				"unmatched":      unmatched,
-				"processed":      processed,
-				"summaryTag":     c.Tag,
-				Primary.String(): c.Primary,
-				Backup.String():  c.Backup,
-				Zorro.String():   c.Zorro,
-				TDA.String():     c.Tda,
-				Unsched.String(): c.Unsched,
+				"eventType": Summary.String(),
+				"dstTag":    tag,
+				"counters": mapstr.M{
+					"unmatched":      unmatched,
+					"processed":      processed,
+					Primary.String(): c.Primary,
+					Backup.String():  c.Backup,
+					Zorro.String():   c.Zorro,
+					TDA.String():     c.Tda,
+					Unsched.String(): c.Unsched,
+				},
 			},
 		})
 	}
@@ -477,7 +481,7 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 		return &event, ErrScheduleBusNotFound
 	}
 
-	fmt.Printf("\nDestination:%s Source:%s\n%+v\n", dstLabel, srcLabel, routing)
+	logp.Debug("ScheduleCache", "Destination:%s Source:%s %+v", dstLabel, srcLabel, routing)
 
 	switch srcLabel {
 	case routing.Pri:
