@@ -3,6 +3,7 @@ package analytics
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
@@ -21,8 +22,10 @@ type ESSearch struct {
 }
 
 type BusRouting struct {
-	Pri string
-	Sec string
+	Pri       string
+	Sec       string
+	StartDate *time.Time
+	EndDate   *time.Time
 }
 
 type BusMap map[string]*BusRouting

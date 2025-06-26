@@ -24,9 +24,9 @@ type Mapping struct {
 }
 
 type Developer struct {
-	LoadCache   bool `config:"load_cache"`
-	SaveCache   bool `config:"save_cache"`
-	SkipEndDate bool `config:"skip_end_date"`
+	LoadCache       bool `config:"load_cache"`
+	SaveCache       bool `config:"save_cache"`
+	ValidateEndDate bool `config:"validate_end_date"`
 }
 
 type Elasticsearch struct {
@@ -64,9 +64,9 @@ var DefaultConfig = Config{
 		Index:   "log-magnum-scheduler-*",
 		Period:  5 * time.Minute,
 		Dev: Developer{
-			LoadCache:   false,
-			SkipEndDate: false,
-			SaveCache:   false,
+			LoadCache:       false,
+			SaveCache:       false,
+			ValidateEndDate: true,
 		},
 	},
 }

@@ -2,6 +2,7 @@ package analytics
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
@@ -9,8 +10,10 @@ import (
 )
 
 var fieldMap = map[string]string{
-	"pri_src": "scheduler.schedule.events.event_params.pri_src",
-	"sec_src": "scheduler.schedule.events.event_params.sec_src",
+	"pri_src":    "scheduler.schedule.events.event_params.pri_src",
+	"sec_src":    "scheduler.schedule.events.event_params.sec_src",
+	"start_date": "scheduler.schedule.start_date",
+	"end_date":   "scheduler.schedule.end_date",
 }
 
 func StringPtr(s string) *string { return &s }
@@ -47,10 +50,22 @@ func processBucketsIntoBusMap(buckets []types.StringTermsBucket) BusMap {
 
 			if v, ok := topAgg.Top[0].Metrics[fieldMap["pri_src"]]; ok {
 				busMap[key].Pri = v.(string)
+				continue
 			}
 
 			if v, ok := topAgg.Top[0].Metrics[fieldMap["sec_src"]]; ok {
 				busMap[key].Sec = v.(string)
+				continue
+			}
+
+			if v, ok := topAgg.Top[0].Metrics[fieldMap["start_date"]]; ok {
+				busMap[key].StartDate, _ = ParseCustomTime(v.(string))
+				continue
+			}
+
+			if v, ok := topAgg.Top[0].Metrics[fieldMap["end_date"]]; ok {
+				busMap[key].EndDate, _ = ParseCustomTime(v.(string))
+				continue
 			}
 		}
 	}
@@ -148,9 +163,139 @@ func createAggregations() map[string]types.Aggregations {
 				Order: map[string]sortorder.SortOrder{
 					"_key": sortorder.Asc,
 				},
-				Size: esapi.IntPtr(2000),
+				Size: esapi.IntPtr(3000),
 			},
 			Aggregations: subAgg,
 		},
 	}
 }
+
+// ParseCustomTime takes a string in "2006/01/02 15:04:05" format and returns a pointer to a time.Time
+func ParseCustomTime(input string) (*time.Time, error) {
+	layout := "2006/01/02 15:04:05"
+	t, err := time.Parse(layout, input)
+	if err != nil {
+		return nil, err
+	}
+
+	return &t, nil
+}
+
+/*
+GET log-magnum-scheduler-./_search
+{
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "range": {
+            "scheduler.schedule.end_date": {
+              "gte": "now"
+            }
+          }
+        },
+        {
+          "range": {
+            "scheduler.schedule.start_date": {
+              "lte": "now"
+            }
+          }
+        },
+        {
+          "range": {
+            "@timestamp": {
+              "gte": "now-4h",
+              "lte": "now"
+            }
+          }
+        },
+        {
+          "match_phrase": {
+            "event.module": "schedule"
+          }
+        }
+      ]
+    }
+  },
+  "aggs": {
+    "bus_codes": {
+      "terms": {
+        "field": "scheduler.schedule.events.event_params.bus_name",
+        "order": {
+          "_key": "asc"
+        },
+        "size": 3000
+      },
+      "aggs": {
+        "pri_src": {
+          "filter": {
+            "bool": {
+              "filter": [
+                {
+                  "bool": {
+                    "should": [
+                      {
+                        "exists": {
+                          "field": "scheduler.schedule.events.event_params.pri_src"
+                        }
+                      }
+                    ],
+                    "minimum_should_match": 1
+                  }
+                }
+              ]
+            }
+          },
+          "aggs": {
+            "metric": {
+              "top_metrics": {
+                "metrics": {
+                  "field": "scheduler.schedule.events.event_params.pri_src"
+                },
+                "size": 1,
+                "sort": {
+                  "@timestamp": "desc"
+                }
+              }
+            }
+          }
+        },
+        "sec_src": {
+          "filter": {
+            "bool": {
+              "filter": [
+                {
+                  "bool": {
+                    "should": [
+                      {
+                        "exists": {
+                          "field": "scheduler.schedule.events.event_params.sec_src"
+                        }
+                      }
+                    ],
+                    "minimum_should_match": 1
+                  }
+                }
+              ]
+            }
+          },
+          "aggs": {
+            "metric": {
+              "top_metrics": {
+                "metrics": {
+                  "field": "scheduler.schedule.events.event_params.sec_src"
+                },
+                "size": 1,
+                "sort": {
+                  "@timestamp": "desc"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "size": 0
+}
+*/

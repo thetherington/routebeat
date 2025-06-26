@@ -50,10 +50,10 @@ routebeat:
     # developer settings to save/load cache
     dev:
       # load a local copy of the schedule cache (scheduleCache.gob)
-      load_cache: false
+      load_cache: true
 
       # save a the schedule cache on shutdown (scheduleCache.gob)
-      save_cache: false 
+      save_cache: true 
       
-      # validate the end date
-      skip_end_date: false
+      # disable validating the end date (default true)
+      validate_end_date: false

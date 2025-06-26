@@ -311,6 +311,7 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 		processed int // counter for any routes with matched exact tag
 		discarded int // counter for any routes with unmatched exact tag
 		unmatched int // counter for any destinations not in the cache
+		expired   int // counter for any destination expired schedule end time
 
 		counters = &Counters{Tag: tag} // counters for the schedule state routing
 	)
@@ -319,13 +320,17 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 		// create beat event from edge information and update counters on route deviation findings
 		event, err := bt.CreateEventFromEdge(&edge, tag, counters, eventType)
 		if err != nil {
-			if errors.Is(err, ErrEdgeTagNotFound) {
+			switch {
+			case errors.Is(err, ErrEdgeTagNotFound):
 				discarded++
 				continue
-			}
 
-			if errors.Is(err, ErrScheduleBusNotFound) {
+			case errors.Is(err, ErrScheduleBusNotFound):
 				unmatched++
+
+			case errors.Is(err, ErrScheduleBusExpired):
+				unmatched++
+				expired++
 			}
 		}
 
@@ -368,7 +373,14 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 	bt.client.PublishAll(events)
 
-	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, Unmatched: %d EventType: %s", tag, processed, discarded, unmatched, eventType)
+	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, Unmatched: %d, Expired: %d, EventType: %s",
+		tag,
+		processed,
+		discarded,
+		unmatched,
+		expired,
+		eventType,
+	)
 }
 
 func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Counters, eventType EventType) (*beat.Event, error) {
@@ -479,6 +491,15 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	if !ok {
 		event.PutValue("schedule.matched", false)
 		return &event, ErrScheduleBusNotFound
+	}
+
+	// validate if the current time is after the end time in the routing (default to true)
+	// return event as-is if the cache end-date is less then the current time
+	if bt.config.ES.Dev.ValidateEndDate && routing.EndDate != nil {
+		if time.Now().After(*routing.EndDate) {
+			event.PutValue("schedule.matched", false)
+			return &event, ErrScheduleBusExpired
+		}
 	}
 
 	logp.Debug("ScheduleCache", "Destination:%s Source:%s %+v", dstLabel, srcLabel, routing)

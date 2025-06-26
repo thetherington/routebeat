@@ -8,6 +8,7 @@ import (
 var (
 	ErrEdgeTagNotFound     = errors.New("tag not found in edge tags list")
 	ErrScheduleBusNotFound = errors.New("buscode not found in schedule busmap cache")
+	ErrScheduleBusExpired  = errors.New("buscode in schedule cache end date expired")
 )
 
 // EventType is a small enum
