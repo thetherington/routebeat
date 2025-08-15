@@ -51,6 +51,7 @@ type SubscribedSource struct {
 	Id           string
 	Name         string
 	IsSub        bool
+	Tags         []string
 	NamesetNames []NamesetName
 }
 

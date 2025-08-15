@@ -49,7 +49,7 @@ func processBucketsIntoBusMap(buckets []types.StringTermsBucket) BusMap {
 
 			// check if the top metrics has atleast one array
 			if topAgg.Hits.Total.Value == 0 {
-				logp.Err("%v, key: %s", ErrEmptyTopHitValueList, subKey)
+				logp.Err("%v, key: %s, bus: %s", ErrEmptyTopHitValueList, subKey, key)
 				continue
 			}
 

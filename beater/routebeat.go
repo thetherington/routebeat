@@ -27,6 +27,7 @@ const (
 	ANALYTICS_TIMEOUT = 10
 	BUSCACHE_FILE     = "busCache.gob"
 	SCHEDCACHE_FILE   = "scheduleCache.gob"
+	GLOBAL_COUNTERS   = "global"
 )
 
 var (
@@ -371,6 +372,34 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 		})
 	}
 
+	// update the global counters by merging existing counters into it
+	if eventType == Query {
+		countersCache.Do(func(c *cache.CacheMap[string, *Counters]) {
+			g := new(Counters)
+
+			for _, v := range c.Store {
+				g.Merge(v)
+			}
+
+			// create the global counters event from the cache
+			events = append(events, beat.Event{
+				Timestamp:  time.Now(),
+				TimeSeries: false,
+				Fields: mapstr.M{
+					"eventType": Summary.String(),
+					"dstTag":    GLOBAL_COUNTERS,
+					"counters": mapstr.M{
+						Primary.String(): g.Primary,
+						Backup.String():  g.Backup,
+						Zorro.String():   g.Zorro,
+						TDA.String():     g.Tda,
+						Unsched.String(): g.Unsched,
+					},
+				},
+			})
+		})
+	}
+
 	bt.client.PublishAll(events)
 
 	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, Unmatched: %d, Expired: %d, EventType: %s",
@@ -391,6 +420,8 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 		srcLabel     string       // broadview source label
 		prevState    RoutingState // placeholder to store the previous routing state (default Unknown)
 		currentState RoutingState // placeholder to store the current routing state (default Unknown)
+
+		srcTags = make([]string, 0) // source tags
 	)
 
 	// check if the tag exactly matches one of the items in tags
@@ -478,6 +509,8 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 
 			event.PutValue("sourceLabel", srcLabel)
 		}
+
+		srcTags = append(srcTags, edge.SubscribedSource.Tags...)
 	}
 
 	// destination has no physical source or subscribed source then remove the key
@@ -504,17 +537,17 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 
 	logp.Debug("ScheduleCache", "Destination:%s Source:%s %+v", dstLabel, srcLabel, routing)
 
-	switch srcLabel {
-	case routing.Pri:
+	switch {
+	case srcLabel == routing.Pri:
 		currentState = Primary
 
-	case routing.Sec:
+	case srcLabel == routing.Sec:
 		currentState = Backup
 
-	case bt.config.Zorro:
+	case slices.Contains(srcTags, bt.config.Zorro):
 		currentState = Zorro
 
-	case bt.config.TDA:
+	case srcLabel == bt.config.TDA:
 		currentState = TDA
 
 	default:
