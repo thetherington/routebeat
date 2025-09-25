@@ -11,8 +11,10 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
 )
 
+type BusRouteMap = map[string]*BusRouting
+
 type SearchInterface interface {
-	QuerySchedulerEventParams(context.Context) (map[string]*BusRouting, error)
+	QuerySchedulerEventParams(context.Context) (BusRouteMap, error)
 }
 
 type ESSearch struct {
@@ -27,8 +29,6 @@ type BusRouting struct {
 	StartDate *time.Time
 	EndDate   *time.Time
 }
-
-type BusMap map[string]*BusRouting
 
 type ClientConfig struct {
 	Address string
@@ -66,7 +66,7 @@ func NewClient(cfg *ClientConfig) (SearchInterface, error) {
 	}, nil
 }
 
-func (es *ESSearch) QuerySchedulerEventParams(ctx context.Context) (map[string]*BusRouting, error) {
+func (es *ESSearch) QuerySchedulerEventParams(ctx context.Context) (BusRouteMap, error) {
 	// send query
 	resp, err := es.client.Search().Index(es.index).Request(es.request).Do(ctx)
 	if err != nil {

@@ -22,8 +22,8 @@ var fieldMap = map[string]string{
 
 func StringPtr(s string) *string { return &s }
 
-func processBucketsIntoBusMap(buckets []types.StringTermsBucket) BusMap {
-	busMap := make(BusMap, 0)
+func processBucketsIntoBusMap(buckets []types.StringTermsBucket) BusRouteMap {
+	busMap := make(BusRouteMap, 0)
 
 	for _, bucket := range buckets {
 		key, ok := bucket.Key.(string)

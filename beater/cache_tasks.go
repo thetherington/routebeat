@@ -13,7 +13,7 @@ func AnalyticsQueryGoRoutine(period time.Duration, done <-chan struct{}) {
 	ticker := time.NewTicker(period)
 
 	for {
-		bm, err := func() (map[string]*insite.BusRouting, error) {
+		bm, err := func() (insite.BusRouteMap, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), ANALYTICS_TIMEOUT*time.Second)
 			defer cancel()
 

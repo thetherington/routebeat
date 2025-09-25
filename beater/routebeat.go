@@ -581,8 +581,8 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	if prevState != currentState {
 		// perform this in a mutex lock - for concurrency reasons
 		busCache.DoMut(dstLabel, func(value *BusState) {
-			// only set the transition time when the transition is nil and the state is not primary
-			if (value.Transition == nil) && (currentState != Primary) {
+			// transition time when the transition is not primary
+			if currentState != Primary {
 				event.PutValue("schedule.deviationStartTime", value.SetTransitionTime(time.Now()))
 			}
 
