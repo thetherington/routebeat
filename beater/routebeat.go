@@ -160,6 +160,11 @@ func (bt *routebeat) Stop() {
 		}
 	}
 
+	// Stops go routines:
+	//   - magnum token refresh
+	//   - query terminals routine
+	//   - subscription run reconnect routine
+	//   - exits beat run function
 	close(bt.done)
 }
 
@@ -321,6 +326,10 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 				"isSrc": edge.RoutedPhysicalSource.IsSrc,
 			}
 
+			if len(edge.RoutedPhysicalSource.Tags) > 0 {
+				m.Put("physTags", edge.RoutedPhysicalSource.Tags)
+			}
+
 			rangeOverNamesets(edge.RoutedPhysicalSource.NamesetNames, &m)
 
 			event.PutValue("routeableTerminal.physicalSource", m)
@@ -339,6 +348,10 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			m := mapstr.M{
 				"name":  edge.SubscribedSource.Name,
 				"isSub": edge.SubscribedSource.IsSub,
+			}
+
+			if len(edge.SubscribedSource.Tags) > 0 {
+				m.Put("subTags", edge.SubscribedSource.Tags)
 			}
 
 			rangeOverNamesets(edge.SubscribedSource.NamesetNames, &m)

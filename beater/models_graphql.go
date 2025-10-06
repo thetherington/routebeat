@@ -44,6 +44,7 @@ type RoutedPhysicalSource struct {
 	Id           string
 	Name         string
 	IsSrc        bool
+	Tags         []string
 	NamesetNames []NamesetName
 }
 
@@ -51,6 +52,7 @@ type SubscribedSource struct {
 	Id           string
 	Name         string
 	IsSub        bool
+	Tags         []string
 	NamesetNames []NamesetName
 }
 
