@@ -32,7 +32,7 @@ type Config struct {
 
 var DefaultConfig = Config{
 	Period: 10 * time.Second,
-	Tags:   []string{"MES", "IPAN"},
+	Tags:   []string{},
 	API: MagnumAPI{
 		Url:           "https://129.153.131.121/graphql/v1.1",
 		Limit:         2000,
