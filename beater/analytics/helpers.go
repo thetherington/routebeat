@@ -1,21 +1,17 @@
 package analytics
 
 import (
-	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
-	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/runtimefieldtype"
-	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/scriptlanguage"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/sortorder"
 )
 
 var fieldMap = map[string]string{
-	"pri_src":    "primary_source",
-	"sec_src":    "backup_source",
+	"pri_src":    "scheduler.schedule.events.event_params.pri_src",
+	"sec_src":    "scheduler.schedule.events.event_params.sec_src",
 	"start_date": "scheduler.schedule.start_date",
 	"end_date":   "scheduler.schedule.end_date",
 }
@@ -41,44 +37,35 @@ func processBucketsIntoBusMap(buckets []types.StringTermsBucket) BusRouteMap {
 				continue
 			}
 
-			topAgg, ok := filterAgg.Aggregations["metric"].(*types.TopHitsAggregate)
+			topAgg, ok := filterAgg.Aggregations["metric"].(*types.TopMetricsAggregate)
 			if !ok {
 				logp.Err("%v, key: %s", ErrCastTopHitAggregate, subKey)
 				continue
 			}
 
 			// check if the top metrics has atleast one array
-			if topAgg.Hits.Total.Value == 0 {
-				logp.Err("%v, key: %s, bus: %s", ErrEmptyTopHitValueList, subKey, key)
+			if len(topAgg.Top) == 0 {
 				continue
 			}
 
-			var data []string
+			if v, ok := topAgg.Top[0].Metrics[fieldMap["pri_src"]]; ok {
+				busMap[key].Pri = v.(string)
+				continue
+			}
 
-			for field, rawMessage := range topAgg.Hits.Hits[0].Fields {
-				if err := json.Unmarshal(rawMessage, &data); err != nil {
-					logp.Err("%v error: %v", ErrUnmarshallTopHitValue, err)
-					continue
-				}
+			if v, ok := topAgg.Top[0].Metrics[fieldMap["sec_src"]]; ok {
+				busMap[key].Sec = v.(string)
+				continue
+			}
 
-				if len(data) == 0 {
-					logp.Err("%v, key: %s, field: %s", ErrEmptyTopHitValueList, subKey, field)
-					continue
-				}
+			if v, ok := topAgg.Top[0].Metrics[fieldMap["start_date"]]; ok {
+				busMap[key].StartDate, _ = ParseCustomTime(v.(string))
+				continue
+			}
 
-				switch field {
-				case "primary_source":
-					busMap[key].Pri = data[0]
-
-				case "backup_source":
-					busMap[key].Sec = data[0]
-
-				case "scheduler.schedule.start_date":
-					busMap[key].StartDate, _ = ParseCustomTime(data[0])
-
-				case "scheduler.schedule.end_date":
-					busMap[key].EndDate, _ = ParseCustomTime(data[0])
-				}
+			if v, ok := topAgg.Top[0].Metrics[fieldMap["end_date"]]; ok {
+				busMap[key].EndDate, _ = ParseCustomTime(v.(string))
+				continue
 			}
 		}
 	}
@@ -132,7 +119,6 @@ func createQuery() *types.Query {
 }
 
 func createAggregations() map[string]types.Aggregations {
-
 	// sub aggregation Top Metrics with filter expression
 	subAgg := make(map[string]types.Aggregations, 0)
 
@@ -148,8 +134,8 @@ func createAggregations() map[string]types.Aggregations {
 			},
 			Aggregations: map[string]types.Aggregations{
 				"metric": {
-					TopHits: &types.TopHitsAggregation{
-						Fields: []types.FieldAndFormat{
+					TopMetrics: &types.TopMetricsAggregation{
+						Metrics: []types.TopMetricsValue{
 							{Field: fieldName},
 						},
 						Size: esapi.IntPtr(1),
@@ -162,7 +148,6 @@ func createAggregations() map[string]types.Aggregations {
 								},
 							},
 						},
-						Source_: false,
 					},
 				},
 			},
@@ -173,7 +158,7 @@ func createAggregations() map[string]types.Aggregations {
 	return map[string]types.Aggregations{
 		"bus_name": {
 			Terms: &types.TermsAggregation{
-				Field: StringPtr("buscode"),
+				Field: StringPtr("scheduler.schedule.events.event_params.bus_name"),
 				Order: map[string]sortorder.SortOrder{
 					"_key": sortorder.Asc,
 				},
@@ -182,53 +167,6 @@ func createAggregations() map[string]types.Aggregations {
 			Aggregations: subAgg,
 		},
 	}
-}
-
-func createRuntimeMappings() types.RuntimeFields {
-	runtimeFields := types.RuntimeFields{
-		"buscode": types.RuntimeField{
-			Type: runtimefieldtype.Keyword,
-			Script: &types.Script{
-				Lang: &scriptlanguage.Painless,
-				Source: StringPtr(`
-					if (doc.containsKey('scheduler.schedule.tags') && 
-          				doc['scheduler.schedule.tags'].value.contains(":")
-        			) {
-          				emit(doc['scheduler.schedule.tags'].value.splitOnToken(":")[1])
-        			}
-			`),
-			},
-		},
-	}
-
-	script := `
-	        if (doc.containsKey('scheduler.schedule.comment') &&
-	      		doc['scheduler.schedule.comment'].value.contains("<REPLACE>:")
-	    	) {
-	      		String message = doc['scheduler.schedule.comment'].value;
-	      		Matcher m = /<REPLACE>:\s*(\S+)/.matcher(message);
-	      		if (m.find()) {
-	        		emit(m.group(1))
-	      	}
-	    }
-	`
-
-	fmap := map[string]string{
-		"primary_source": `Source`,
-		"backup_source":  `Backup`,
-	}
-
-	for k, v := range fmap {
-		runtimeFields[k] = types.RuntimeField{
-			Type: runtimefieldtype.Keyword,
-			Script: &types.Script{
-				Lang:   &scriptlanguage.Painless,
-				Source: StringPtr(strings.ReplaceAll(script, "<REPLACE>", v)),
-			},
-		}
-	}
-
-	return runtimeFields
 }
 
 // ParseCustomTime takes a string in "2006/01/02 15:04:05" format and returns a pointer to a time.Time
@@ -278,50 +216,10 @@ GET log-magnum-scheduler-./_search
       ]
     }
   },
-  "runtime_mappings": {
-    "buscode": {
-      "type": "keyword",
-      "script": """
-        if (doc.containsKey('scheduler.schedule.tags') &&
-          doc['scheduler.schedule.tags'].value.contains(":")
-        ) {
-          emit(doc['scheduler.schedule.tags'].value.splitOnToken(":")[1])
-        }
-      """
-    },
-    "primary_source": {
-      "type": "keyword",
-      "script": """
-        if (doc.containsKey('scheduler.schedule.comment') &&
-          doc['scheduler.schedule.comment'].value.contains("Source:")
-        ) {
-          String message = doc['scheduler.schedule.comment'].value;
-          Matcher m = /Source:\s*(\S+)/.matcher(message);
-          if (m.find()) {
-            emit(m.group(1))
-          }
-        }
-      """
-    },
-    "backup_source": {
-      "type": "keyword",
-      "script": """
-        if (doc.containsKey('scheduler.schedule.comment') &&
-          doc['scheduler.schedule.comment'].value.contains("Backup:")
-        ) {
-          String message = doc['scheduler.schedule.comment'].value;
-          Matcher m = /Backup:\s*(\S+)/.matcher(message);
-          if (m.find()) {
-            emit(m.group(1))
-          }
-        }
-      """
-    }
-  },
   "aggs": {
     "bus_codes": {
       "terms": {
-        "field": "buscode",
+        "field": "scheduler.schedule.events.event_params.bus_name",
         "order": {
           "_key": "asc"
         },
@@ -337,7 +235,7 @@ GET log-magnum-scheduler-./_search
                     "should": [
                       {
                         "exists": {
-                          "field": "primary_source"
+                          "field": "scheduler.schedule.events.event_params.pri_src"
                         }
                       }
                     ],
@@ -349,21 +247,14 @@ GET log-magnum-scheduler-./_search
           },
           "aggs": {
             "metric": {
-              "top_hits": {
-                "fields": [
-                  {
-                    "field": "primary_source"
-                  }
-                ],
-                "_source": false,
+              "top_metrics": {
+                "metrics": {
+                  "field": "scheduler.schedule.events.event_params.pri_src"
+                },
                 "size": 1,
-                "sort": [
-                  {
-                    "@timestamp": {
-                      "order": "desc"
-                    }
-                  }
-                ]
+                "sort": {
+                  "@timestamp": "desc"
+                }
               }
             }
           }
@@ -377,7 +268,7 @@ GET log-magnum-scheduler-./_search
                     "should": [
                       {
                         "exists": {
-                          "field": "backup_source"
+                          "field": "scheduler.schedule.events.event_params.sec_src"
                         }
                       }
                     ],
@@ -389,21 +280,14 @@ GET log-magnum-scheduler-./_search
           },
           "aggs": {
             "metric": {
-              "top_hits": {
-                "fields": [
-                  {
-                    "field": "backup_source"
-                  }
-                ],
-                "_source": false,
+              "top_metrics": {
+                "metrics": {
+                  "field": "scheduler.schedule.events.event_params.sec_src"
+                },
                 "size": 1,
-                "sort": [
-                  {
-                    "@timestamp": {
-                      "order": "desc"
-                    }
-                  }
-                ]
+                "sort": {
+                  "@timestamp": "desc"
+                }
               }
             }
           }

@@ -36,19 +36,25 @@ type Elasticsearch struct {
 	Dev     Developer     `config:"dev"`
 }
 
+type Notifier struct {
+	IP   string `config:"ip"`
+	Port int    `config:"port"`
+}
+
 type Config struct {
-	Period  time.Duration `config:"period"`
-	Tags    []string      `config:"tags"`
-	Mapping *Mapping      `config:"mapping"`
-	API     MagnumAPI     `config:"api"`
-	ES      Elasticsearch `config:"elasticsearch"`
-	TDA     string        `config:"tda"`
-	Zorro   string        `config:"zorro"`
+	Period    time.Duration `config:"period"`
+	Tags      []string      `config:"tags"`
+	Mapping   *Mapping      `config:"mapping"`
+	API       MagnumAPI     `config:"api"`
+	ES        Elasticsearch `config:"elasticsearch"`
+	Notifiers []Notifier    `config:"notifiers"`
+	TDA       string        `config:"tda"`
+	Zorro     string        `config:"zorro"`
 }
 
 var DefaultConfig = Config{
 	Period: 10 * time.Second,
-	Tags:   []string{"MES", "IPAN"},
+	Tags:   []string{},
 	API: MagnumAPI{
 		Url:           "https://129.153.131.121/graphql/v1.1",
 		Limit:         2000,

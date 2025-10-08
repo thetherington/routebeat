@@ -50,9 +50,6 @@ func NewClient(cfg *ClientConfig) (SearchInterface, error) {
 	// bool query
 	req.Query = createQuery()
 
-	// dynamic runtime mappings
-	req.RuntimeMappings = createRuntimeMappings()
-
 	// Root: Terms, Sub: Top Metrics aggregations
 	req.Aggregations = createAggregations()
 

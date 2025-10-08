@@ -19,6 +19,7 @@ import (
 	insite "github.com/thetherington/routebeat/beater/analytics"
 	"github.com/thetherington/routebeat/beater/cache"
 	"github.com/thetherington/routebeat/beater/httpclient"
+	"github.com/thetherington/routebeat/beater/notify"
 	routeCfg "github.com/thetherington/routebeat/config"
 )
 
@@ -39,12 +40,13 @@ var (
 
 // routebeat configuration.
 type routebeat struct {
-	done       chan struct{}
-	config     routeCfg.Config
-	client     beat.Client
-	httpClient *http.Client
-	subClient  *graphql.SubscriptionClient
-	subIds     []string
+	done         chan struct{}
+	config       routeCfg.Config
+	client       beat.Client
+	httpClient   *http.Client
+	subClient    *graphql.SubscriptionClient
+	notifyClient *notify.NotifyApp
+	subIds       []string
 }
 
 // New creates an instance of routebeat.
@@ -100,11 +102,29 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		return nil, fmt.Errorf("error authenticating with magnum: %v", err)
 	}
 
+	var n *notify.NotifyApp
+
+	// create notify app if settings exist
+	if len(c.Notifiers) > 0 {
+		hosts := make([]string, 0)
+		for _, hostgroup := range c.Notifiers {
+			hosts = append(hosts, fmt.Sprintf("%s:%d", hostgroup.IP, hostgroup.Port))
+		}
+
+		ncfg := &notify.NotifyAppCfg{
+			Hosts:  hosts,
+			Origin: "127.0.0.1",
+		}
+
+		n = notify.NewNotifierApp(ncfg)
+	}
+
 	bt := &routebeat{
-		done:       done,
-		config:     c,
-		httpClient: client,
-		subIds:     make([]string, 0),
+		done:         done,
+		config:       c,
+		httpClient:   client,
+		notifyClient: n,
+		subIds:       make([]string, 0),
 	}
 
 	return bt, nil
@@ -581,25 +601,78 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	if prevState != currentState {
 		// perform this in a mutex lock - for concurrency reasons
 		busCache.DoMut(dstLabel, func(value *BusState) {
-			// transition time when the transition is not primary
-			if currentState != Primary {
-				event.PutValue("schedule.deviationStartTime", value.SetTransitionTime(time.Now()))
-			}
+			// set the current time to now and save previous time.
+			prevTime := value.SetTransitionTime(time.Now(), true)
 
+			// For notification type events:
+			//   1: generate notifications for the state change
+			//   2: decrement the counters based on the prevState
+			//   3: add the deviationStartTime field to the transition time
+			//   4: if the new status is primary, reset the transition time, add deviationEndTime
 			if eventType == Notification {
+				var msgType notify.MessageType
+
+				// set the message type of the notification based on the currentState
+				switch currentState {
+				case Primary:
+					msgType = notify.RouteValidationCorrection
+
+				case Backup, Zorro, TDA, Unsched:
+					msgType = notify.RouteValidationError
+				}
+
+				// Build Notifications Transition - Create two notifications
+				// 		Notification 1 - Is a notification that will close the previous ticket prevous status with an end time
+				// 		Notification 2 - Is a notification that will open a new ticket with the current status (no end time)
+				if prevState != Unknown {
+					// Notification 1
+					// -----------------------------------------------------------------------------------------------
+					n := notify.NewBuilder(bt.notifyClient.Origin).
+						WithMessageByType(msgType).
+						AddDetails(msgType, notify.Details{
+							Status:    prevState.String(),
+							Busname:   dstLabel,
+							Source:    srcLabel,
+							Start:     prevTime,
+							End:       value.GetTransitionTimeStr(),
+							EventType: eventType.String(),
+						}).
+						Build()
+					fmt.Printf("\n%+v\n\n", n)
+				}
+
+				// Notification 2
+				// -----------------------------------------------------------------------------------------------
+				n := notify.NewBuilder(bt.notifyClient.Origin).
+					WithMessageByType(msgType).
+					AddDetails(msgType, notify.Details{
+						Status:    currentState.String(),
+						Busname:   dstLabel,
+						Source:    srcLabel,
+						Start:     value.GetTransitionTimeStr(),
+						End:       "",
+						EventType: eventType.String(),
+					}).
+					Build()
+				fmt.Printf("\n%+v\n\n", n)
+
+				// optimistic update the counters
 				counters.Decrement(prevState)
 
-				// handle when the state
+				// get the transition start time always for every state change
 				event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr())
 
 				// if the state has switched to primary and this is a notification,
-				// then update the deviation end time.
+				// then update the deviation end time. reset the transition time to nil
+				// and store the current time into the restore.  use prevTime for the startTime
+				// because it should be the previous state change.
 				if currentState == Primary {
-					// reset the time for a new transition to occur
+					event.PutValue("schedule.deviationStartTime", prevTime)
 					event.PutValue("schedule.deviationEndTime", value.ResetTransition())
 				}
-			}
-		})
+
+			} // end if eventType == Notification
+		}) // end busCache.DoMut()
 	}
 
 	// for queries get the transition start time or "-" incase the notification already processed state change
@@ -612,7 +685,7 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 				value.CorrectDefunctTransition()
 			}
 
-			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr())
+			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr(true))
 		})
 	}
 
