@@ -123,12 +123,19 @@ func (bs *BusState) SwapState(rs RoutingState) RoutingState {
 	return temp
 }
 
-func (bs *BusState) SetTransitionTime(t time.Time, returnPrevious ...bool) string {
+type OptionalFlag = bool
+
+const (
+	FlagOnlyTransition OptionalFlag = true
+	FlagPreviousTime   OptionalFlag = true
+)
+
+func (bs *BusState) SetTransitionTime(t time.Time, flag ...OptionalFlag) string {
 	defer func() {
 		bs.Restore = nil
 	}()
 
-	if len(returnPrevious) > 0 && returnPrevious[0] {
+	if len(flag) > 0 && flag[0] {
 		x := bs.GetTransitionTimeStr()
 		bs.Transition = &t
 
@@ -140,14 +147,14 @@ func (bs *BusState) SetTransitionTime(t time.Time, returnPrevious ...bool) strin
 }
 
 // get the RFC3339 time format.  if the transition is nil then the return value is "-"
-func (bs *BusState) GetTransitionTimeStr(onlyTransitionTime ...bool) string {
+func (bs *BusState) GetTransitionTimeStr(flag ...OptionalFlag) string {
 	// if either the transition or restore is nil, just return "-" regardless
 	if bs.Transition == nil && bs.Restore == nil {
 		return "-"
 	}
 
 	// if the user sets the onlyTransitionTime argument to true, then return only the transition time or "-" if nil
-	if len(onlyTransitionTime) > 0 && onlyTransitionTime[0] {
+	if len(flag) > 0 && flag[0] {
 		if bs.Transition == nil {
 			return "-"
 		}

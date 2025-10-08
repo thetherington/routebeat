@@ -602,7 +602,7 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 		// perform this in a mutex lock - for concurrency reasons
 		busCache.DoMut(dstLabel, func(value *BusState) {
 			// set the current time to now and save previous time.
-			prevTime := value.SetTransitionTime(time.Now(), true)
+			prevTime := value.SetTransitionTime(time.Now(), FlagPreviousTime)
 
 			// For notification type events:
 			//   1: generate notifications for the state change
@@ -685,7 +685,7 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 				value.CorrectDefunctTransition()
 			}
 
-			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr(true))
+			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr(FlagOnlyTransition))
 		})
 	}
 
