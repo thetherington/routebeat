@@ -36,19 +36,37 @@ type Elasticsearch struct {
 	Dev     Developer     `config:"dev"`
 }
 
+type Notifier struct {
+	Manual []Node       `config:"manual"`
+	Auto   NotifierAuto `config:"auto"`
+}
+
+type Node struct {
+	Node string `config:"node"`
+	Port int    `config:"port"`
+}
+
+type NotifierAuto struct {
+	Host          string   `config:"host"`
+	Username      string   `config:"username"`
+	Password      string   `config:"password"`
+	NotifierTypes []string `config:"types"`
+}
+
 type Config struct {
-	Period  time.Duration `config:"period"`
-	Tags    []string      `config:"tags"`
-	Mapping *Mapping      `config:"mapping"`
-	API     MagnumAPI     `config:"api"`
-	ES      Elasticsearch `config:"elasticsearch"`
-	TDA     string        `config:"tda"`
-	Zorro   string        `config:"zorro"`
+	Period    time.Duration `config:"period"`
+	Tags      []string      `config:"tags"`
+	Mapping   *Mapping      `config:"mapping"`
+	API       MagnumAPI     `config:"api"`
+	ES        Elasticsearch `config:"elasticsearch"`
+	Notifiers Notifier      `config:"notifiers"`
+	TDA       string        `config:"tda"`
+	Zorro     string        `config:"zorro"`
 }
 
 var DefaultConfig = Config{
 	Period: 10 * time.Second,
-	Tags:   []string{"MES", "IPAN"},
+	Tags:   []string{},
 	API: MagnumAPI{
 		Url:           "https://129.153.131.121/graphql/v1.1",
 		Limit:         2000,
@@ -67,6 +85,14 @@ var DefaultConfig = Config{
 			LoadCache:       false,
 			SaveCache:       false,
 			ValidateEndDate: true,
+		},
+	},
+	Notifiers: Notifier{
+		Manual: []Node{},
+		Auto: NotifierAuto{
+			Username:      "admin",
+			Password:      "admin",
+			NotifierTypes: []string{"notification-elastic"},
 		},
 	},
 }

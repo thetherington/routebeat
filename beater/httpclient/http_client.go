@@ -1,8 +1,10 @@
 package httpclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
@@ -20,11 +22,19 @@ type MagnumAuthCredentials struct {
 	Done         chan struct{}
 }
 
+type AnalyticsAuthCredentials struct {
+	Username string
+	Password string
+	IP       string
+}
+
+type HTTPClientOption func(*http.Client) error
+
 func init() {
 	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 }
 
-func NewHTTPClient(credentials ...*MagnumAuthCredentials) (*http.Client, error) {
+func NewHTTPClient(opts ...HTTPClientOption) (*http.Client, error) {
 	var err error
 
 	jar, err := cookiejar.New(nil)
@@ -32,13 +42,68 @@ func NewHTTPClient(credentials ...*MagnumAuthCredentials) (*http.Client, error) 
 		return nil, err
 	}
 
-	c := &http.Client{Jar: jar}
+	c := &http.Client{
+		Jar:     jar,
+		Timeout: 10 * time.Second,
+	}
 
-	if len(credentials) > 0 {
-		err = magnumAuth(credentials[0], jar)
+	for _, opt := range opts {
+		if err := opt(c); err != nil {
+			return nil, err
+		}
 	}
 
 	return c, err
+}
+
+func WithMagnumAuth(creds *MagnumAuthCredentials) HTTPClientOption {
+	return func(c *http.Client) error {
+		jar, ok := c.Jar.(*cookiejar.Jar)
+		if !ok {
+			return fmt.Errorf("http client jar is not a cookiejar.Jar")
+		}
+		return magnumAuth(creds, jar)
+	}
+}
+
+func WithAnalyticsAuth(creds *AnalyticsAuthCredentials) HTTPClientOption {
+	return func(c *http.Client) error {
+		return AuthenticateAnalytics(c, creds)
+	}
+}
+
+// AuthenticateAnalytics performs authentication and stores the session cookie in the client.
+func AuthenticateAnalytics(c *http.Client, creds *AnalyticsAuthCredentials) error {
+	loginURL := fmt.Sprintf("https://%s:443/api/v1/login", creds.IP)
+
+	body := map[string]string{
+		"username": creds.Username,
+		"password": creds.Password,
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("failed to marshal analytics login body: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", loginURL, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create analytics login request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.Do(req)
+	if err != nil {
+		return fmt.Errorf("analytics login request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("analytics login failed: %s", resp.Status)
+	}
+
+	// Cookies are automatically stored in the jar for the host
+	return nil
 }
 
 func magnumAuth(c *MagnumAuthCredentials, jar *cookiejar.Jar) error {

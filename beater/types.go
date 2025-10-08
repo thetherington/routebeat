@@ -107,6 +107,7 @@ func (s *Counters) Decrement(field RoutingState) {
 type BusState struct {
 	State      RoutingState
 	Transition *time.Time
+	Restore    *time.Time
 	Counter    int
 }
 
@@ -122,15 +123,48 @@ func (bs *BusState) SwapState(rs RoutingState) RoutingState {
 	return temp
 }
 
-func (bs *BusState) SetTransitionTime(t time.Time) string {
+type OptionalFlag = bool
+
+const (
+	FlagOnlyTransition OptionalFlag = true
+	FlagPreviousTime   OptionalFlag = true
+)
+
+func (bs *BusState) SetTransitionTime(t time.Time, flag ...OptionalFlag) string {
+	defer func() {
+		bs.Restore = nil
+	}()
+
+	if len(flag) > 0 && flag[0] {
+		x := bs.GetTransitionTimeStr()
+		bs.Transition = &t
+
+		return x
+	}
+
 	bs.Transition = &t
 	return bs.GetTransitionTimeStr()
 }
 
 // get the RFC3339 time format.  if the transition is nil then the return value is "-"
-func (bs *BusState) GetTransitionTimeStr() string {
-	if bs.Transition == nil {
+func (bs *BusState) GetTransitionTimeStr(flag ...OptionalFlag) string {
+	// if either the transition or restore is nil, just return "-" regardless
+	if bs.Transition == nil && bs.Restore == nil {
 		return "-"
+	}
+
+	// if the user sets the onlyTransitionTime argument to true, then return only the transition time or "-" if nil
+	if len(flag) > 0 && flag[0] {
+		if bs.Transition == nil {
+			return "-"
+		}
+
+		return bs.Transition.Format(time.RFC3339)
+	}
+
+	// if the transition is nil and the restore value is not nil, then use the restore
+	if bs.Transition == nil && bs.Restore != nil {
+		return bs.Restore.Format(time.RFC3339)
 	}
 
 	return bs.Transition.Format(time.RFC3339)
@@ -139,9 +173,13 @@ func (bs *BusState) GetTransitionTimeStr() string {
 // Set the transition to be nil for the next transition. return the time now
 // TODO return the duration would be better
 func (bs *BusState) ResetTransition() string {
+	t := time.Now()
+
+	bs.Restore = &t
 	bs.Transition = nil
 	bs.Counter = 0
-	return time.Now().Format(time.RFC3339)
+
+	return t.Format(time.RFC3339)
 }
 
 // checks whether the transition is in a defunct state if the state is Primary and the transition time is set

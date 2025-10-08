@@ -20,6 +20,10 @@ routebeat:
     address: "http://127.0.0.1:9200"
     index: "log-magnum-scheduler-*"    
     period: 5m
+  notifiers:
+    auto:
+      host: "127.0.0.1"
+      types: ["notification-elastic"]
 processors:
   - add_cloud_metadata: ~
   - add_docker_metadata: ~

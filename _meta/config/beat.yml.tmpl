@@ -47,3 +47,8 @@ routebeat:
 
     # Defines how often the schedule event params is fetched 
     period: 5m
+
+  notifiers:
+    auto:
+      host: "127.0.0.1"
+      types: ["notification-elastic"]

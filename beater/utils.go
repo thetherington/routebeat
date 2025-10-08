@@ -1,6 +1,7 @@
 package beater
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -34,4 +35,42 @@ func findNamesetValueByName(s string, namesetName []NamesetName, defaultValue st
 	}
 
 	return defaultValue
+}
+
+// Single-item JSON-based converter
+func ConvertByJSON[S any, D any](src S) (D, error) {
+	var dst D
+
+	b, err := json.Marshal(src)
+
+	if err != nil {
+		return dst, err
+	}
+
+	if err := json.Unmarshal(b, &dst); err != nil {
+		return dst, err
+	}
+
+	return dst, nil
+}
+
+// Slice JSON-based converter (marshals once)
+func ConvertSliceJSON[S any, D any](src []S) ([]D, error) {
+	if src == nil {
+		return nil, nil
+	}
+
+	var dst []D
+
+	b, err := json.Marshal(src)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal(b, &dst); err != nil {
+		return nil, err
+	}
+
+	return dst, nil
 }

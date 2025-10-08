@@ -57,6 +57,21 @@ routebeat:
       
       # disable validating the end date (default true)
       validate_end_date: false
+
+  # (optional) Magnum Analytics notification programs to dispatch transition alerts
+  notifiers:
+    # manual notifier IP and Port settings
+    manual:
+      - node: "127.0.0.1"
+        port: 19708
+
+    # automatic notifier settings using the Magnum Analytics Locator API
+    # default username password is admin/admin
+    auto:
+      host: "127.0.0.1"
+      username: "admin"
+      password: "admin"
+      types: ["notification-elastic"]
 # ================================== General ===================================
 
 # The name of the shipper that publishes the network data. It can be used to group

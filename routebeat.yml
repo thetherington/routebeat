@@ -17,10 +17,10 @@ routebeat:
     default: ""
   
   # TDA default source
-  tda: ""
+  tda: "BSITAL"
 
   # Tag for the Zorro sources.
-  zorro: ""
+  zorro: "zorro"
 
   # Magnum API
   api:
@@ -35,18 +35,28 @@ routebeat:
     # Magnum OIDC Authentication
     auth:
       client_id: "insite-poller"
-      client_secret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd"
+      client_secret: "RPLoQg5f0iuZ75QYc7KCUF4GgOmFEEYH"
       token_url: "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token"
 
   elasticsearch:
     # Elasticsearch server node url
-    address: "http://127.0.0.1:9200"
+    address: "http://10.9.0.69:9200"
 
     # Index pattern to query for scheduler data
     index: "log-magnum-scheduler-*"
 
     # Defines how often the schedule event params is fetched 
     period: 5m
+
+  notifiers:
+    auto:
+      host: "10.9.0.69"
+      types: ["notification-elastic", "notification-http"]
+    # manual:
+      # - node: 10.9.0.69
+      #   port: 19708
+      # - node: 10.9.0.69
+      #   port: 19709
 # ================================== General ===================================
 
 # The name of the shipper that publishes the network data. It can be used to group
@@ -111,7 +121,7 @@ setup.kibana:
 # ---------------------------- Elasticsearch Output ----------------------------
 output.elasticsearch:
   # Array of hosts to connect to.
-  hosts: ["localhost:9200"]
+  hosts: ["10.9.0.69:9200"]
 
   # Performance preset - one of "balanced", "throughput", "scale",
   # "latency", or "custom".

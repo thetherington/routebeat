@@ -19,6 +19,7 @@ import (
 	insite "github.com/thetherington/routebeat/beater/analytics"
 	"github.com/thetherington/routebeat/beater/cache"
 	"github.com/thetherington/routebeat/beater/httpclient"
+	"github.com/thetherington/routebeat/beater/notify"
 	routeCfg "github.com/thetherington/routebeat/config"
 )
 
@@ -32,6 +33,7 @@ const (
 
 var (
 	db            insite.SearchInterface
+	notifier      notify.NotiferInterface
 	scheduleCache = cache.NewCacheMap[string, *insite.BusRouting]()
 	countersCache = cache.NewCacheMap[string, *Counters]()
 	busCache      = cache.NewCacheMap[string, *BusState]()
@@ -90,14 +92,50 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 
 	// create generic http client interface and authenticate with magnum
 	// http client contains a cookieJar that is updated by a goroutine
-	client, err := httpclient.NewHTTPClient(&httpclient.MagnumAuthCredentials{
-		ClientID:     c.API.Auth.ClientID,
-		ClientSecret: c.API.Auth.ClientSecret,
-		TokenURL:     c.API.Auth.TokenURL,
-		Done:         done,
-	})
+	client, err := httpclient.NewHTTPClient(httpclient.WithMagnumAuth(
+		&httpclient.MagnumAuthCredentials{
+			ClientID:     c.API.Auth.ClientID,
+			ClientSecret: c.API.Auth.ClientSecret,
+			TokenURL:     c.API.Auth.TokenURL,
+			Done:         done,
+		},
+	))
 	if err != nil {
 		return nil, fmt.Errorf("error authenticating with magnum: %v", err)
+	}
+
+	// create notify app if Manual settings or AutoDiscovery settings are present
+	if len(c.Notifiers.Manual) > 0 {
+		nodes, _ := ConvertSliceJSON[routeCfg.Node, notify.Node](c.Notifiers.Manual)
+
+		notifier, err = notify.NewNotifierApp(notify.WithManualConfig(&notify.NotifyAppCfg{
+			Nodes:  nodes,
+			Origin: b.Info.Hostname,
+		}))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create notify app: %v", err)
+		}
+
+		logp.Info("Created notify app with %d nodes", len(nodes))
+
+		// Auto discovery settings
+	} else if c.Notifiers.Auto.Host != "" {
+		notifier, err = notify.NewNotifierApp(notify.WithAutoDiscover(&notify.AutoDiscoveryCfg{
+			Host:          c.Notifiers.Auto.Host,
+			Username:      c.Notifiers.Auto.Username,
+			Password:      c.Notifiers.Auto.Password,
+			NotifierTypes: c.Notifiers.Auto.NotifierTypes,
+			Origin:        b.Info.Hostname,
+		}))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create notify app: %v", err)
+		}
+
+		logp.Info("Created notify app with auto configuration for host: %s", c.Notifiers.Auto.Host)
+
+		// no notify configuration found
+	} else {
+		logp.Warn("No notify configuration found. Notifications will be disabled")
 	}
 
 	bt := &routebeat{
@@ -314,12 +352,13 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 		unmatched int // counter for any destinations not in the cache
 		expired   int // counter for any destination expired schedule end time
 
-		counters = &Counters{Tag: tag} // counters for the schedule state routing
+		counters      = &Counters{Tag: tag}            // counters for the schedule state routing
+		notifications = make([]notify.Notification, 0) // notifications to send
 	)
 
 	for _, edge := range edges {
 		// create beat event from edge information and update counters on route deviation findings
-		event, err := bt.CreateEventFromEdge(&edge, tag, counters, eventType)
+		results, err := bt.CreateEventFromEdge(&edge, tag, counters, eventType)
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrEdgeTagNotFound):
@@ -335,7 +374,9 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			}
 		}
 
-		events = append(events, *event)
+		events = append(events, *results.event)
+		notifications = append(notifications, results.notifications...)
+
 		processed++
 	}
 
@@ -400,6 +441,18 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 		})
 	}
 
+	// send any notifications in a seperate goroutine
+	if len(notifications) > 0 && notifier != nil {
+		go func() {
+			if err := notifier.Send(notifications...); err != nil {
+				logp.Err("failed to send notifications: %v", err)
+				return
+			}
+
+			logp.Debug("ProcessResults", "Sent %d notifications for Tag: %s", len(notifications), tag)
+		}()
+	}
+
 	bt.client.PublishAll(events)
 
 	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, Unmatched: %d, Expired: %d, EventType: %s",
@@ -412,7 +465,12 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 	)
 }
 
-func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Counters, eventType EventType) (*beat.Event, error) {
+type EventResults struct {
+	event         *beat.Event
+	notifications []notify.Notification
+}
+
+func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Counters, eventType EventType) (*EventResults, error) {
 	var (
 		mapping bool = bt.config.Mapping != nil
 
@@ -421,7 +479,8 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 		prevState    RoutingState // placeholder to store the previous routing state (default Unknown)
 		currentState RoutingState // placeholder to store the current routing state (default Unknown)
 
-		srcTags = make([]string, 0) // source tags
+		srcTags       = make([]string, 0) // source tags
+		notifications = make([]notify.Notification, 0)
 	)
 
 	// check if the tag exactly matches one of the items in tags
@@ -523,7 +582,7 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	routing, ok := scheduleCache.Get(dstLabel)
 	if !ok {
 		event.PutValue("schedule.matched", false)
-		return &event, ErrScheduleBusNotFound
+		return &EventResults{event: &event, notifications: notifications}, ErrScheduleBusNotFound
 	}
 
 	// validate if the current time is after the end time in the routing (default to true)
@@ -531,7 +590,7 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	if bt.config.ES.Dev.ValidateEndDate && routing.EndDate != nil {
 		if time.Now().After(*routing.EndDate) {
 			event.PutValue("schedule.matched", false)
-			return &event, ErrScheduleBusExpired
+			return &EventResults{event: &event, notifications: notifications}, ErrScheduleBusExpired
 		}
 	}
 
@@ -578,27 +637,86 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	})
 
 	// check if there's a there's a transition
-	if prevState != currentState {
+	if (eventType == Notification) && (prevState != currentState) {
 		// perform this in a mutex lock - for concurrency reasons
 		busCache.DoMut(dstLabel, func(value *BusState) {
-			// transition time when the transition is not primary
-			if currentState != Primary {
-				event.PutValue("schedule.deviationStartTime", value.SetTransitionTime(time.Now()))
+			// set the current time to now and save previous time.
+			prevTime := value.SetTransitionTime(time.Now(), FlagPreviousTime)
+
+			// For notification type events:
+			//   1: generate notifications for the state change
+			//   2: decrement the counters based on the prevState
+			//   3: add the deviationStartTime field to the transition time
+			//   4: if the new status is primary, reset the transition time, add deviationEndTime
+			var msgType notify.MessageType
+
+			// set the message type of the notification based on the currentState
+			switch currentState {
+			case Primary:
+				msgType = notify.RouteValidationCorrection
+
+			case Backup, Zorro, TDA, Unsched:
+				msgType = notify.RouteValidationError
 			}
 
-			if eventType == Notification {
-				counters.Decrement(prevState)
-
-				// handle when the state
-				event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr())
-
-				// if the state has switched to primary and this is a notification,
-				// then update the deviation end time.
-				if currentState == Primary {
-					// reset the time for a new transition to occur
-					event.PutValue("schedule.deviationEndTime", value.ResetTransition())
-				}
+			// Build Notifications Transition - Create two notifications
+			// 		Notification 1 - Is a notification that will close the previous ticket previous status with an end time
+			// 		Notification 2 - Is a notification that will open a new ticket with the current status (no end time)
+			if prevState != Unknown {
+				// Notification 1
+				// -----------------------------------------------------------------------------------------------
+				notifications = append(notifications, notify.NewBuilder(notifier.GetOrigin()).
+					WithMessageByType(msgType).
+					AddDetails(msgType, notify.Details{
+						Status:    prevState.String(),
+						Busname:   dstLabel,
+						Source:    srcLabel,
+						Start:     prevTime,
+						End:       value.GetTransitionTimeStr(),
+						EventType: eventType.String(),
+						Trigger:   "GraphQL Subscription (Previous State)",
+					}).
+					Build(),
+				)
 			}
+
+			// Notification 2
+			// -----------------------------------------------------------------------------------------------
+			notifications = append(notifications, notify.NewBuilder(notifier.GetOrigin()).
+				WithMessageByType(msgType).
+				AddDetails(msgType, notify.Details{
+					Status:    currentState.String(),
+					Busname:   dstLabel,
+					Source:    srcLabel,
+					Start:     value.GetTransitionTimeStr(),
+					End:       "",
+					EventType: eventType.String(),
+					Trigger:   "GraphQL Subscription (Current State)",
+				}).
+				Build(),
+			)
+
+			// optimistic update the counters
+			counters.Decrement(prevState)
+
+			// get the transition start time always for every state change
+			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr())
+
+			// if the state has switched to primary and this is a notification,
+			// then update the deviation end time. reset the transition time to nil
+			// and store the current time into the restore.  use prevTime for the startTime
+			// because it should be the previous state change.
+			if currentState == Primary {
+				event.PutValue("schedule.deviationStartTime", prevTime)
+				event.PutValue("schedule.deviationEndTime", value.ResetTransition())
+			}
+
+		}) // end busCache.DoMut()
+	}
+
+	if (eventType == Notification) && (prevState == currentState) {
+		busCache.DoMut(dstLabel, func(value *BusState) {
+			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr())
 		})
 	}
 
@@ -606,15 +724,22 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	// also heal the transition state if in a defunct state
 	if eventType == Query {
 		busCache.DoMut(dstLabel, func(value *BusState) {
+			// update the transition time if the state has changed
+			// this covers the scenario where a notification hasn't been sent
+			// but the query has detected a state change
+			if prevState != currentState {
+				value.SetTransitionTime(time.Now())
+			}
+
 			// recover the transition if in a defunct state. must call this 3x times to self heal
 			if value.IsDefunctTransition() {
 				logp.Warn("Busname: %s has a defunct transition", dstLabel)
 				value.CorrectDefunctTransition()
 			}
 
-			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr())
+			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr(FlagOnlyTransition))
 		})
 	}
 
-	return &event, nil
+	return &EventResults{event: &event, notifications: notifications}, nil
 }
