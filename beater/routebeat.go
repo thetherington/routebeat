@@ -116,7 +116,12 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 			Origin: "127.0.0.1",
 		}
 
-		n = notify.NewNotifierApp(ncfg)
+		n, err = notify.NewNotifierApp(ncfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create notify app: %v", err)
+		}
+
+		logp.Info("Created notify app with %d hosts", len(hosts))
 	}
 
 	bt := &routebeat{
@@ -597,6 +602,8 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 		c.Store[dstLabel] = NewBusState(currentState)
 	})
 
+	notifications := make([]notify.Notification, 0)
+
 	// check if there's a there's a transition
 	if prevState != currentState {
 		// perform this in a mutex lock - for concurrency reasons
@@ -622,12 +629,12 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 				}
 
 				// Build Notifications Transition - Create two notifications
-				// 		Notification 1 - Is a notification that will close the previous ticket prevous status with an end time
+				// 		Notification 1 - Is a notification that will close the previous ticket previous status with an end time
 				// 		Notification 2 - Is a notification that will open a new ticket with the current status (no end time)
 				if prevState != Unknown {
 					// Notification 1
 					// -----------------------------------------------------------------------------------------------
-					n := notify.NewBuilder(bt.notifyClient.Origin).
+					notifications = append(notifications, notify.NewBuilder(bt.notifyClient.Origin).
 						WithMessageByType(msgType).
 						AddDetails(msgType, notify.Details{
 							Status:    prevState.String(),
@@ -637,13 +644,13 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 							End:       value.GetTransitionTimeStr(),
 							EventType: eventType.String(),
 						}).
-						Build()
-					fmt.Printf("\n%+v\n\n", n)
+						Build(),
+					)
 				}
 
 				// Notification 2
 				// -----------------------------------------------------------------------------------------------
-				n := notify.NewBuilder(bt.notifyClient.Origin).
+				notifications = append(notifications, notify.NewBuilder(bt.notifyClient.Origin).
 					WithMessageByType(msgType).
 					AddDetails(msgType, notify.Details{
 						Status:    currentState.String(),
@@ -653,8 +660,8 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 						End:       "",
 						EventType: eventType.String(),
 					}).
-					Build()
-				fmt.Printf("\n%+v\n\n", n)
+					Build(),
+				)
 
 				// optimistic update the counters
 				counters.Decrement(prevState)
@@ -687,6 +694,21 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 
 			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr(FlagOnlyTransition))
 		})
+	}
+
+	// send any notifications in a seperate goroutine
+	if len(notifications) > 0 && bt.notifyClient != nil {
+		go func() {
+			if err := bt.notifyClient.Send(notifications...); err != nil {
+				logp.Err("failed to send %d notifications for Bus: %s Source: %s, %s => %s: %v",
+					len(notifications), dstLabel, srcLabel, prevState.String(), currentState.String(), err)
+
+				return
+			}
+
+			logp.Info("Sent %d notifications for Bus: %s Source: %s, %s => %s",
+				len(notifications), dstLabel, srcLabel, prevState.String(), currentState.String())
+		}()
 	}
 
 	return &event, nil

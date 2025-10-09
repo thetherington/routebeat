@@ -58,7 +58,3 @@ type Context struct {
 	Basic    []Basic    `json:"basic"`
 	Detailed []Detailed `json:"detailed"`
 }
-
-/*
-Builder utilities
-*/
