@@ -2,6 +2,7 @@ package beater
 
 import (
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -105,10 +106,11 @@ func (s *Counters) Decrement(field RoutingState) {
 }
 
 type BusState struct {
-	State      RoutingState
-	Transition *time.Time
-	Restore    *time.Time
-	Counter    int
+	State           RoutingState
+	Transition      *time.Time
+	TransitionStart *time.Time
+	Restore         *time.Time
+	Counter         int
 }
 
 func NewBusState(state RoutingState) *BusState {
@@ -123,19 +125,26 @@ func (bs *BusState) SwapState(rs RoutingState) RoutingState {
 	return temp
 }
 
-type OptionalFlag = bool
+type OptionalFlag int
 
 const (
-	FlagOnlyTransition OptionalFlag = true
-	FlagPreviousTime   OptionalFlag = true
+	FlagOnlyTransition OptionalFlag = iota
+	FlagPreviousTime
+	FlagTransitionStart
 )
 
+// Set the transition time.  if the optional flag FlagPreviousTime then return the previous transition time string instead of the new one
 func (bs *BusState) SetTransitionTime(t time.Time, flag ...OptionalFlag) string {
 	defer func() {
+		// if the restore time is set, then set the transition begin time to the transition time
+		if bs.Restore != nil {
+			bs.TransitionStart = &t
+		}
+
 		bs.Restore = nil
 	}()
 
-	if len(flag) > 0 && flag[0] {
+	if len(flag) > 0 && slices.Contains(flag, FlagPreviousTime) {
 		x := bs.GetTransitionTimeStr()
 		bs.Transition = &t
 
@@ -147,14 +156,28 @@ func (bs *BusState) SetTransitionTime(t time.Time, flag ...OptionalFlag) string 
 }
 
 // get the RFC3339 time format.  if the transition is nil then the return value is "-"
+// flag FlagOnlyTransition can be used to indicate only Transition Time or return "-"
 func (bs *BusState) GetTransitionTimeStr(flag ...OptionalFlag) string {
 	// if either the transition or restore is nil, just return "-" regardless
 	if bs.Transition == nil && bs.Restore == nil {
 		return "-"
 	}
 
+	// if the user sets the transitionBegin argument to true, then return the transition begin time or "-" if nil
+	if len(flag) > 0 && slices.Contains(flag, FlagTransitionStart) {
+		if bs.TransitionStart == nil {
+			if slices.Contains(flag, FlagOnlyTransition) && bs.Transition != nil {
+				return bs.Transition.Format(time.RFC3339)
+			}
+
+			return "-"
+		}
+
+		return bs.TransitionStart.Format(time.RFC3339)
+	}
+
 	// if the user sets the onlyTransitionTime argument to true, then return only the transition time or "-" if nil
-	if len(flag) > 0 && flag[0] {
+	if len(flag) > 0 && slices.Contains(flag, FlagOnlyTransition) {
 		if bs.Transition == nil {
 			return "-"
 		}
@@ -177,6 +200,7 @@ func (bs *BusState) ResetTransition() string {
 
 	bs.Restore = &t
 	bs.Transition = nil
+	bs.TransitionStart = nil
 	bs.Counter = 0
 
 	return t.Format(time.RFC3339)

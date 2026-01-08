@@ -20,10 +20,11 @@ type Unique struct {
 }
 
 type Classification struct {
-	Severity      string `json:"severity"`
-	Priority      int    `json:"priority"`
-	Category      string `json:"category"`
-	CategoryLabel string `json:"category_label"`
+	Severity      string   `json:"severity"`
+	Priority      int      `json:"priority"`
+	Category      string   `json:"category"`
+	CategoryLabel string   `json:"category_label"`
+	Tags          []string `json:"tags"`
 }
 
 type Detector struct {

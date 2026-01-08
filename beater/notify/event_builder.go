@@ -69,6 +69,11 @@ func (b *Builder) WithSummary(summary string) *Builder {
 	return b
 }
 
+func (b *Builder) WithTags(tags ...string) *Builder {
+	b.n.Classification.Tags = tags
+	return b
+}
+
 // WithMessageByType sets the Message.Summary and Message.Body by type
 func (b *Builder) WithMessageByType(messageType MessageType) *Builder {
 	switch messageType {

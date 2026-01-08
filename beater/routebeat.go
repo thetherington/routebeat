@@ -676,6 +676,7 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 						EventType: eventType.String(),
 						Trigger:   "GraphQL Subscription (Previous State)",
 					}).
+					WithTags("previous").
 					Build(),
 				)
 			}
@@ -693,6 +694,7 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 					EventType: eventType.String(),
 					Trigger:   "GraphQL Subscription (Current State)",
 				}).
+				WithTags("current").
 				Build(),
 			)
 
@@ -704,10 +706,10 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 
 			// if the state has switched to primary and this is a notification,
 			// then update the deviation end time. reset the transition time to nil
-			// and store the current time into the restore.  use prevTime for the startTime
-			// because it should be the previous state change.
+			// and store the current time into the restore.  get the transition begin time as the start time
+			// it should be the time when the transition originally left from primary.
 			if currentState == Primary {
-				event.PutValue("schedule.deviationStartTime", prevTime)
+				event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr(FlagTransitionStart, FlagOnlyTransition))
 				event.PutValue("schedule.deviationEndTime", value.ResetTransition())
 			}
 
