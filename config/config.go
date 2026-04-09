@@ -23,11 +23,17 @@ type Mapping struct {
 	Default string `config:"default"`
 }
 
+type Elasticsearch struct {
+	Address string `config:"address"`
+	Index   string `config:"index"`
+}
+
 type Config struct {
-	Period  time.Duration `config:"period"`
-	Tags    []string      `config:"tags"`
-	Mapping *Mapping      `config:"mapping"`
-	API     MagnumAPI     `config:"api"`
+	Period  time.Duration  `config:"period"`
+	Tags    []string       `config:"tags"`
+	Mapping *Mapping       `config:"mapping"`
+	API     MagnumAPI      `config:"api"`
+	ES      *Elasticsearch `config:"elasticsearch"`
 }
 
 var DefaultConfig = Config{

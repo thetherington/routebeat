@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/elastic/elastic-agent-libs/mapstr"
 )
@@ -34,4 +35,11 @@ func findNamesetValueByName(s string, namesetName []NamesetName, defaultValue st
 	}
 
 	return defaultValue
+}
+
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }

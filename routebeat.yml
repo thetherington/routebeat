@@ -16,21 +16,28 @@ routebeat:
     nameset: "Broadview"
     default: ""
 
+  elasticsearch:
+    # Elasticsearch server node url
+    address: "http://10.9.0.69:9200"
+
+    # Index pattern to query for syslog data
+    index: "log-syslog-informational-*"
+
   # Magnum API
   api:
-    url: "https://129.153.131.121/graphql/v1.1"
+    url: "https://129.213.88.5/graphql/v1.1"
     
     # Get route notifications via the subscriptions
     notifications: true
 
     # Limit the number of destinations in the API query results
     limit: 2000
-    
+
     # Magnum OIDC Authentication
     auth:
       client_id: "insite-poller"
-      client_secret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd"
-      token_url: "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token"
+      client_secret: "gpJ2WSbjBOD1HoZxpTYGaqKdqeBD1mll"
+      token_url: "https://129.213.88.5/auth/realms/magnum/protocol/openid-connect/token"
 # ================================== General ===================================
 
 # The name of the shipper that publishes the network data. It can be used to group
@@ -95,7 +102,7 @@ setup.kibana:
 # ---------------------------- Elasticsearch Output ----------------------------
 output.elasticsearch:
   # Array of hosts to connect to.
-  hosts: ["localhost:9200"]
+  hosts: ["10.9.0.69:9200"]
 
   # Performance preset - one of "balanced", "throughput", "scale",
   # "latency", or "custom".

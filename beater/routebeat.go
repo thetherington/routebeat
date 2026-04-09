@@ -16,6 +16,8 @@ import (
 	"github.com/hasura/go-graphql-client"
 	"github.com/hasura/go-graphql-client/pkg/jsonutil"
 
+	"github.com/thetherington/routebeat/beater/analytics"
+	"github.com/thetherington/routebeat/beater/cache"
 	"github.com/thetherington/routebeat/beater/httpclient"
 	routeCfg "github.com/thetherington/routebeat/config"
 )
@@ -40,6 +42,11 @@ func (et EventType) String() string {
 	return eventName[et]
 }
 
+var (
+	db       analytics.SearchInterface
+	logCache *cache.Cache
+)
+
 // routebeat configuration.
 type routebeat struct {
 	done       chan struct{}
@@ -57,6 +64,9 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		return nil, fmt.Errorf("error reading config file: %v", err)
 	}
 
+	// Initialize the log cache for 10 minutes
+	logCache = cache.NewCache(10 * time.Minute)
+
 	// Validate there is atleast 1 tag
 	if len(c.Tags) < 1 {
 		return nil, errors.New("beat requires atleast 1 tag in the configuration")
@@ -68,6 +78,18 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 	}
 
 	done := make(chan struct{})
+
+	// Create the elasticsearch client handler if ES configuration is provided in the config
+	if c.ES != nil {
+		var err error
+		db, err = analytics.NewClient(&analytics.ClientConfig{
+			Address: c.ES.Address,
+			Index:   c.ES.Index,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create elasticsearch client: %w", err)
+		}
+	}
 
 	// create generic http client interface and authenticate with magnum
 	// http client contains a cookieJar that is updated by a goroutine
@@ -101,13 +123,14 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		return err
 	}
 
+	// Disable GraphQL query client for now (only need subscriptions)
 	// create the graphql query client
-	queryClient := graphql.NewClient(bt.config.API.Url, bt.httpClient)
+	// queryClient := graphql.NewClient(bt.config.API.Url, bt.httpClient)
 
 	// run the query client in a seperate go routine for each tag
-	for _, tag := range bt.config.Tags {
-		go bt.QueryTerminalsRoutine(queryClient, tag, bt.done)
-	}
+	// for _, tag := range bt.config.Tags {
+	// go bt.QueryTerminalsRoutine(queryClient, tag, bt.done)
+	// }
 
 	// create the subscription client whether it's needed or not
 	bt.subClient = graphql.
@@ -273,6 +296,8 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 		processed int
 		discarded int
 		mapping   bool = bt.config.Mapping != nil
+		srcId     string
+		dstId     string
 	)
 
 	for _, edge := range edges {
@@ -282,6 +307,8 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			discarded++
 			continue
 		}
+
+		dstId = edge.Id
 
 		// build basic event from query payload
 		event := beat.Event{
@@ -297,6 +324,7 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 				"dstNameset":        mapstr.M{},
 				"eventType":         eventType.String(),
 				"routeableTerminal": mapstr.M{},
+				"matched":           false, // field to indicate if the event was matched to a log in the 5 minute window
 			},
 		}
 
@@ -321,7 +349,10 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 		// create a nested object for the RoutePhysicalSource
 		if edge.RoutedPhysicalSource != nil {
+			srcId = edge.RoutedPhysicalSource.Id
+
 			m := mapstr.M{
+				"srcId": edge.RoutedPhysicalSource.Id,
 				"name":  edge.RoutedPhysicalSource.Name,
 				"isSrc": edge.RoutedPhysicalSource.IsSrc,
 			}
@@ -345,7 +376,10 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 		// create a nested object for the SubscribedSource
 		if edge.SubscribedSource != nil {
+			srcId = edge.SubscribedSource.Id
+
 			m := mapstr.M{
+				"srcId": edge.SubscribedSource.Id,
 				"name":  edge.SubscribedSource.Name,
 				"isSub": edge.SubscribedSource.IsSub,
 			}
@@ -372,6 +406,24 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			event.Delete("routeableTerminal")
 		}
 
+		// find logs in Elasticsearch for the current event
+		if db != nil {
+			// sleep for 8 seconds to allow time for logs to be ingested into elasticsearch before searching
+			time.Sleep(8 * time.Second)
+
+			if err := AnalyzeLogCollection(srcId, dstId, &event); err != nil {
+				if errors.Is(err, ErrNoLogsFound) {
+					logp.Debug("AnalyzeLogCollection", "No logs found for event with srcId: %s and dstId: %s", srcId, dstId)
+				} else if errors.Is(err, ErrNoRequestLogs) {
+					logp.Debug("AnalyzeLogCollection", "No request logs found for event with srcId: %s and dstId: %s", srcId, dstId)
+				} else if errors.Is(err, ErrNoCompletedLogs) {
+					logp.Debug("AnalyzeLogCollection", "No completed logs found for event with srcId: %s and dstId: %s", srcId, dstId)
+				} else {
+					logp.Err("Failed to analyze log collection for event: %v %s", event, err.Error())
+				}
+			}
+		}
+
 		events = append(events, event)
 
 		processed++
@@ -384,4 +436,84 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 	bt.client.PublishAll(events)
 
 	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, EventType: %s", tag, processed, discarded, eventType)
+}
+
+func AnalyzeLogCollection(src, dst string, event *beat.Event) error {
+	if src == "" || dst == "" {
+		return fmt.Errorf("source or destination is blank")
+	}
+
+	logs, err := db.SearchLogs(src, dst)
+	if err != nil {
+		if err == analytics.ErrNoResults {
+			return ErrNoLogsFound
+		}
+
+		return fmt.Errorf("failed to find logs for event: %v", err)
+	}
+
+	var (
+		request  analytics.Source
+		complete analytics.Source
+	)
+
+	// check if any of the logs contain the route subscribe request
+	for _, log := range logs {
+		if strings.Contains(log.Log.Syslog.Message, "request") {
+			// compare the timestamp of the request log to the event timestamp to ensure it's within a 10 second window
+			if (absDuration(event.Timestamp.Sub(log.Device.Timestamp)) <= 10*time.Second) && !logCache.Exists(log.Id) {
+				request = log
+				break
+			}
+		}
+	}
+
+	if request.Device.Timestamp.IsZero() {
+		return ErrNoRequestLogs
+	}
+
+	// check if any of the logs contain the route subscribe complete
+	for _, log := range logs {
+		if strings.Contains(log.Log.Syslog.Message, "Complete") {
+			// compare the timestamp of the complete log that it's greater than the request time and the log is not in cache.
+			if log.Device.Timestamp.After(request.Device.Timestamp) && !logCache.Exists(log.Id) {
+				complete = log
+				break
+			}
+		}
+	}
+
+	if complete.Device.Timestamp.IsZero() {
+		return ErrNoCompletedLogs
+	}
+
+	// Mark these ids as processed in the cache
+	if request.Id != "" {
+		logCache.Add(request.Id)
+	}
+	if complete.Id != "" {
+		logCache.Add(complete.Id)
+	}
+
+	// calculate the duration between the request and complete logs
+	event.PutValue("durationMs", complete.Device.Timestamp.Sub(request.Device.Timestamp).Milliseconds())
+
+	// add the request and complete log information to the event
+	event.PutValue("logs", mapstr.M{
+		"request": mapstr.M{
+			"time": request.Device.Timestamp,
+			"log":  request.Log.Syslog.Message,
+		},
+		"complete": mapstr.M{
+			"time": complete.Device.Timestamp,
+			"log":  complete.Log.Syslog.Message,
+		},
+	})
+
+	event.PutValue("matched", true)
+
+	// replace the event timestamp with the request log timestamp
+	event.Timestamp = request.Device.Timestamp
+
+	return nil
 }
