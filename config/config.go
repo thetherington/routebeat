@@ -24,8 +24,10 @@ type Mapping struct {
 }
 
 type Elasticsearch struct {
-	Address string `config:"address"`
-	Index   string `config:"index"`
+	Address string        `config:"address"`
+	Index   string        `config:"index"`
+	Strict  bool          `config:"strict"`
+	Delay   time.Duration `config:"delay"`
 }
 
 type Config struct {

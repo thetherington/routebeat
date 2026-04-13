@@ -13,6 +13,7 @@ import (
 	"github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/mapstr"
+	"github.com/go-co-op/gocron/v2"
 	"github.com/hasura/go-graphql-client"
 	"github.com/hasura/go-graphql-client/pkg/jsonutil"
 
@@ -43,8 +44,9 @@ func (et EventType) String() string {
 }
 
 var (
-	db       analytics.SearchInterface
-	logCache *cache.Cache
+	db        analytics.SearchInterface
+	logCache  *cache.Cache
+	scheduler gocron.Scheduler
 )
 
 // routebeat configuration.
@@ -67,6 +69,12 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 	// Initialize the log cache for 10 minutes
 	logCache = cache.NewCache(10 * time.Minute)
 
+	// Initialize the scheduler
+	sched, _ := gocron.NewScheduler()
+	scheduler = sched
+
+	scheduler.Start()
+
 	// Validate there is atleast 1 tag
 	if len(c.Tags) < 1 {
 		return nil, errors.New("beat requires atleast 1 tag in the configuration")
@@ -85,6 +93,7 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		db, err = analytics.NewClient(&analytics.ClientConfig{
 			Address: c.ES.Address,
 			Index:   c.ES.Index,
+			Strict:  c.ES.Strict,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create elasticsearch client: %w", err)
@@ -296,8 +305,6 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 		processed int
 		discarded int
 		mapping   bool = bt.config.Mapping != nil
-		srcId     string
-		dstId     string
 	)
 
 	for _, edge := range edges {
@@ -307,8 +314,6 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			discarded++
 			continue
 		}
-
-		dstId = edge.Id
 
 		// build basic event from query payload
 		event := beat.Event{
@@ -349,8 +354,6 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 		// create a nested object for the RoutePhysicalSource
 		if edge.RoutedPhysicalSource != nil {
-			srcId = edge.RoutedPhysicalSource.Id
-
 			m := mapstr.M{
 				"srcId": edge.RoutedPhysicalSource.Id,
 				"name":  edge.RoutedPhysicalSource.Name,
@@ -376,8 +379,6 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 		// create a nested object for the SubscribedSource
 		if edge.SubscribedSource != nil {
-			srcId = edge.SubscribedSource.Id
-
 			m := mapstr.M{
 				"srcId": edge.SubscribedSource.Id,
 				"name":  edge.SubscribedSource.Name,
@@ -406,34 +407,44 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			event.Delete("routeableTerminal")
 		}
 
-		// find logs in Elasticsearch for the current event
-		if db != nil {
-			// sleep for 8 seconds to allow time for logs to be ingested into elasticsearch before searching
-			time.Sleep(8 * time.Second)
-
-			if err := AnalyzeLogCollection(srcId, dstId, &event); err != nil {
-				if errors.Is(err, ErrNoLogsFound) {
-					logp.Debug("AnalyzeLogCollection", "No logs found for event with srcId: %s and dstId: %s", srcId, dstId)
-				} else if errors.Is(err, ErrNoRequestLogs) {
-					logp.Debug("AnalyzeLogCollection", "No request logs found for event with srcId: %s and dstId: %s", srcId, dstId)
-				} else if errors.Is(err, ErrNoCompletedLogs) {
-					logp.Debug("AnalyzeLogCollection", "No completed logs found for event with srcId: %s and dstId: %s", srcId, dstId)
-				} else {
-					logp.Err("Failed to analyze log collection for event: %v %s", event, err.Error())
-				}
-			}
-		}
-
 		events = append(events, event)
 
 		processed++
 	}
 
-	// if len(events) > 0 {
-	// 	fmt.Printf("\n%+v\n\n", events[0])
-	// }
+	// if there is an elasticsearch client and there are events to process
+	// then schedule a job to analyze the logs for these events and publish them after the configured delay
+	if db != nil && len(events) > 0 {
+		id, err := scheduler.NewJob(
+			gocron.OneTimeJob(
+				gocron.OneTimeJobStartDateTime(time.Now().Add(bt.config.ES.Delay)),
+			),
+			gocron.NewTask(
+				func() {
+					for _, event := range events {
+						// extract srcId and dstId from the event for log analysis
+						srcId, dstId, err := getSrcDstIds(&event)
+						if err != nil {
+							logp.Err("Failed to get srcId/dstId from event: %v, error: %s", event, err.Error())
+							continue
+						}
 
-	bt.client.PublishAll(events)
+						// analyze the logs for this event and enrich the event with log data if there is a match
+						if err := AnalyzeLogCollection(srcId, dstId, &event); err != nil {
+							HandleAnalyzeLogError(err, srcId, dstId, &event)
+						}
+					}
+
+					bt.client.PublishAll(events)
+				},
+			),
+		)
+		if err != nil {
+			logp.Err("Failed to create scheduler job for events #%d:%v", len(events), err)
+		}
+
+		logp.Debug("ProcessResults", "Scheduled %d events for Tag: %s with Job ID: %s, EventType: %s", len(events), tag, id.ID().String(), eventType)
+	}
 
 	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, EventType: %s", tag, processed, discarded, eventType)
 }
@@ -501,12 +512,12 @@ func AnalyzeLogCollection(src, dst string, event *beat.Event) error {
 	// add the request and complete log information to the event
 	event.PutValue("logs", mapstr.M{
 		"request": mapstr.M{
-			"time": request.Device.Timestamp,
-			"log":  request.Log.Syslog.Message,
+			"time":    request.Device.Timestamp,
+			"message": request.Log.Syslog.Message,
 		},
 		"complete": mapstr.M{
-			"time": complete.Device.Timestamp,
-			"log":  complete.Log.Syslog.Message,
+			"time":    complete.Device.Timestamp,
+			"message": complete.Log.Syslog.Message,
 		},
 	})
 

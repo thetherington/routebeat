@@ -6,6 +6,11 @@ routebeat:
   mapping:
     nameset: "Broadview"
     default: ""
+  elasticsearch:
+    address: "http://127.0.0.1:9200"
+    index: "log-syslog-informational-*"
+    strict: false
+    delay: 1m
   api:
     url: "https://129.153.131.121/graphql/v1.1"
     notifications: true

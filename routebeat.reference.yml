@@ -15,6 +15,17 @@ routebeat:
   #  nameset: "<nameset>"
   #  default: ""
 
+
+  elasticsearch:
+    # Elasticsearch server node url
+    address: "http://127.0.0.1:9200"
+
+    # Index pattern to query for syslog data
+    index: "log-syslog-informational-*"
+    
+    # Delay to perform log analysis, recommend 1 minute to allow for log ingesting before ES queries
+    delay: 1m
+
   # Magnum API
   api:
     url: "https://<IP>/graphql/v1.1"

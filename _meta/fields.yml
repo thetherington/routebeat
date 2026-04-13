@@ -59,3 +59,42 @@
       dynamic: true
       description: >
         Terminal Routeable information
+    - name: matched
+      type: boolean
+      required: false
+      description: >
+        Indicates if the route is matched with logs
+    - name: durationMs
+      type: integer
+      required: false
+      description: >
+        Duration between request logs and complete logs in milliseconds
+    - name: logs
+      type: group
+      fields: 
+        - name: request
+          type: group
+          fields:
+            - name: time
+              type: date
+              required: false
+              description: >
+                Log request timestamp
+            - name: message
+              type: keyword
+              required: false
+              description: >
+                Log request message
+        - name: complete
+          type: group
+          fields:
+            - name: time
+              type: date
+              required: false
+              description: >
+                Log complete timestamp
+            - name: message
+              type: keyword
+              required: false
+              description: >
+                Log complete message

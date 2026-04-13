@@ -20,12 +20,14 @@ type SearchInterface interface {
 type ClientConfig struct {
 	Address string
 	Index   string
+	Strict  bool
 }
 
 type ESSearch struct {
 	client  *elasticsearch.TypedClient
 	index   string
 	request *search.Request
+	Strict  bool
 }
 
 func StringPtr(s string) *string { return &s }
@@ -43,6 +45,7 @@ func NewClient(cfg *ClientConfig) (SearchInterface, error) {
 	return &ESSearch{
 		client: typedClient,
 		index:  cfg.Index,
+		Strict: cfg.Strict,
 	}, nil
 }
 
@@ -62,7 +65,14 @@ func (es *ESSearch) SearchLogs(source string, destination string) ([]Source, err
 		Size: esapi.IntPtr(3000),
 	}
 
-	resp, err := es.client.Search().Index(es.index).Request(req).Do(context.Background())
+	index := es.index
+	if !es.Strict {
+		// If strict is false, use the IndexPatternForTodayAndYesterday function to get the index pattern for today and yesterday
+		index = IndexPatternForTodayAndYesterday(es.index)
+	}
+
+	resp, err := es.client.Search().Index(index).Request(req).IgnoreUnavailable(true).Do(context.Background())
+
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrSearchFailed, err)
 	}

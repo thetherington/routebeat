@@ -15794,4 +15794,79 @@ required: False
 
 --
 
+*`matched`*::
++
+--
+Indicates if the route is matched with logs
+
+
+type: boolean
+
+required: False
+
+--
+
+*`durationMs`*::
++
+--
+Duration between request logs and complete logs in milliseconds
+
+
+type: integer
+
+required: False
+
+--
+
+
+
+*`logs.request.time`*::
++
+--
+Log request timestamp
+
+
+type: date
+
+required: False
+
+--
+
+*`logs.request.message`*::
++
+--
+Log request message
+
+
+type: keyword
+
+required: False
+
+--
+
+
+*`logs.complete.time`*::
++
+--
+Log complete timestamp
+
+
+type: date
+
+required: False
+
+--
+
+*`logs.complete.message`*::
++
+--
+Log complete message
+
+
+type: keyword
+
+required: False
+
+--
+
 :edit_url!:
