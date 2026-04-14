@@ -198,6 +198,8 @@ func (bt *routebeat) Stop() {
 	//   - subscription run reconnect routine
 	//   - exits beat run function
 	close(bt.done)
+
+	scheduler.Shutdown()
 }
 
 func (bt *routebeat) SubscriptionClientRun() {
