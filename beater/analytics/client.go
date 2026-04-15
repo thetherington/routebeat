@@ -124,12 +124,14 @@ func createQuery(source string, destination string) *types.Query {
 					MultiMatch: &types.MultiMatchQuery{
 						Query:  "INFO:jsonrpc:Subscribe request",
 						Fields: []string{"log.syslog.message"},
+						Type:   &textquerytype.Phrase,
 					},
 				},
 				{
 					MultiMatch: &types.MultiMatchQuery{
 						Query:  "INFO:subscription:Subscription Complete",
 						Fields: []string{"log.syslog.message"},
+						Type:   &textquerytype.Phrase,
 					},
 				},
 			},

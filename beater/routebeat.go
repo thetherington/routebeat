@@ -423,7 +423,7 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			),
 			gocron.NewTask(
 				func() {
-					for _, event := range events {
+					for i, event := range events {
 						// extract srcId and dstId from the event for log analysis
 						srcId, dstId, err := getSrcDstIds(&event)
 						if err != nil {
@@ -435,6 +435,8 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 						if err := AnalyzeLogCollection(srcId, dstId, &event); err != nil {
 							HandleAnalyzeLogError(err, srcId, dstId, &event)
 						}
+
+						events[i] = event
 					}
 
 					bt.client.PublishAll(events)
