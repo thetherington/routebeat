@@ -11,6 +11,7 @@ routebeat:
     index: "log-syslog-informational-*"
     strict: false
     delay: 1m
+    window: 45s
   api:
     url: "https://129.153.131.121/graphql/v1.1"
     notifications: true

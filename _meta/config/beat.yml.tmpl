@@ -30,6 +30,9 @@ routebeat:
     # Delay to perform log analysis, recommend 1 minute to allow for log ingesting before ES queries
     delay: 1m
 
+    # Window to match logs with the route notification. 
+    window: 45s
+
   # Magnum API
   api:
     url: "https://129.153.131.121/graphql/v1.1"

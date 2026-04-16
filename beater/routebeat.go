@@ -304,6 +304,7 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 	var (
 		events    []beat.Event
+		buscodes  []string
 		processed int
 		discarded int
 		mapping   bool = bt.config.Mapping != nil
@@ -409,6 +410,10 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			event.Delete("routeableTerminal")
 		}
 
+		if dst, err := event.GetValue("destinationLabel"); err == nil {
+			buscodes = append(buscodes, dst.(string))
+		}
+
 		events = append(events, event)
 
 		processed++
@@ -417,7 +422,7 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 	// if there is an elasticsearch client and there are events to process
 	// then schedule a job to analyze the logs for these events and publish them after the configured delay
 	if db != nil && len(events) > 0 {
-		id, err := scheduler.NewJob(
+		_, err := scheduler.NewJob(
 			gocron.OneTimeJob(
 				gocron.OneTimeJobStartDateTime(time.Now().Add(bt.config.ES.Delay)),
 			),
@@ -432,7 +437,7 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 						}
 
 						// analyze the logs for this event and enrich the event with log data if there is a match
-						if err := AnalyzeLogCollection(srcId, dstId, &event); err != nil {
+						if err := bt.AnalyzeLogCollection(srcId, dstId, &event); err != nil {
 							HandleAnalyzeLogError(err, srcId, dstId, &event)
 						}
 
@@ -447,13 +452,13 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			logp.Err("Failed to create scheduler job for events #%d:%v", len(events), err)
 		}
 
-		logp.Debug("ProcessResults", "Scheduled %d events for Tag: %s with Job ID: %s, EventType: %s", len(events), tag, id.ID().String(), eventType)
+		logp.Debug("ProcessResults", "Scheduled %d events for Tag: %s with for: [%v], EventType: %s", len(events), tag, strings.Join(buscodes, ","), eventType)
 	}
 
-	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, EventType: %s", tag, processed, discarded, eventType)
+	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, EventType: %s for: [%v]", tag, processed, discarded, eventType, strings.Join(buscodes, ","))
 }
 
-func AnalyzeLogCollection(src, dst string, event *beat.Event) error {
+func (bt *routebeat) AnalyzeLogCollection(src, dst string, event *beat.Event) error {
 	if src == "" || dst == "" {
 		return fmt.Errorf("source or destination is blank")
 	}
@@ -476,7 +481,7 @@ func AnalyzeLogCollection(src, dst string, event *beat.Event) error {
 	for _, log := range logs {
 		if strings.Contains(log.Log.Syslog.Message, "request") {
 			// compare the timestamp of the request log to the event timestamp to ensure it's within a 10 second window
-			if (absDuration(event.Timestamp.Sub(log.Device.Timestamp)) <= 10*time.Second) && !logCache.Exists(log.Id) {
+			if (absDuration(event.Timestamp.Sub(log.Device.Timestamp)) <= bt.config.ES.Window) && !logCache.Exists(log.Id) {
 				request = log
 				break
 			}

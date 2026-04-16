@@ -28,6 +28,7 @@ type Elasticsearch struct {
 	Index   string        `config:"index"`
 	Strict  bool          `config:"strict"`
 	Delay   time.Duration `config:"delay"`
+	Window  time.Duration `config:"window"`
 }
 
 type Config struct {
