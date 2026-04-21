@@ -22,9 +22,16 @@ routebeat:
 
     # Index pattern to query for syslog data
     index: "log-syslog-informational-*"
+
+    # Whether to strictly follow the index pattern wildcard or replace it with the current date. Setting to false will replace the wildcard with the current date, and yesterday
+    strict: false
     
     # Delay to perform log analysis, recommend 1 minute to allow for log ingesting before ES queries
     delay: 1m
+
+    # Window to match logs with the route notification. 
+    window: 45s
+
 
   # Magnum API
   api:

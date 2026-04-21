@@ -13,6 +13,13 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/textquerytype"
 )
 
+const (
+	FROM            = "now-30m"
+	PROCESS         = "magrtrsrv"
+	REQUEST_LOGS    = "INFO:jsonrpc:Subscribe request"
+	COMPLETION_LOGS = "INFO:subscription:Subscription Request Complete"
+)
+
 type SearchInterface interface {
 	SearchLogs(source, destination string) ([]Source, error)
 }
@@ -99,11 +106,11 @@ func (es *ESSearch) SearchLogs(source string, destination string) ([]Source, err
 func createQuery(source string, destination string) *types.Query {
 	mustBoolSlice := make([]types.Query, 0)
 
-	// filter for events in the 5 minute window
+	// filter for events in the 30 minute window
 	mustBoolSlice = append(mustBoolSlice, types.Query{
 		Range: map[string]types.RangeQuery{
 			"@timestamp": types.DateRangeQuery{
-				From: StringPtr("now-5m"),
+				From: StringPtr(FROM),
 				To:   StringPtr("now"),
 			},
 		},
@@ -112,7 +119,7 @@ func createQuery(source string, destination string) *types.Query {
 	// filter for the magrtrsrv process
 	mustBoolSlice = append(mustBoolSlice, types.Query{
 		MatchPhrase: map[string]types.MatchPhraseQuery{
-			"process.name": {Query: "magrtrsrv"},
+			"process.name": {Query: PROCESS},
 		},
 	})
 
@@ -122,14 +129,14 @@ func createQuery(source string, destination string) *types.Query {
 			Should: []types.Query{
 				{
 					MultiMatch: &types.MultiMatchQuery{
-						Query:  "INFO:jsonrpc:Subscribe request",
+						Query:  REQUEST_LOGS,
 						Fields: []string{"log.syslog.message"},
 						Type:   &textquerytype.Phrase,
 					},
 				},
 				{
 					MultiMatch: &types.MultiMatchQuery{
-						Query:  "INFO:subscription:Subscription Complete",
+						Query:  COMPLETION_LOGS,
 						Fields: []string{"log.syslog.message"},
 						Type:   &textquerytype.Phrase,
 					},

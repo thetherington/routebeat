@@ -9,7 +9,9 @@ routebeat:
   elasticsearch:
     address: "http://127.0.0.1:9200"
     index: "log-syslog-informational-*"
+    strict: false
     delay: 1m
+    window: 45s
   api:
     url: "https://129.153.131.121/graphql/v1.1"
     notifications: true

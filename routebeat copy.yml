@@ -16,26 +16,12 @@ routebeat:
     nameset: "Broadview"
     default: ""
 
-
   elasticsearch:
     # Elasticsearch server node url
     address: "http://10.9.0.69:9200"
 
     # Index pattern to query for syslog data
     index: "log-syslog-informational-*"
-
-    # Whether to strictly follow the index pattern wildcard or replace it with the current date. Setting to false will replace the wildcard with the current date, and yesterday
-    strict: false
-    
-    # Delay to perform log analysis, recommend 1 minute to allow for log ingesting before ES queries
-    delay: 1m
-
-    # Window to match logs with the route notification. 
-    window: 45s
-
-    # Sweeping unmatched routes with unmatched logs.  enable to sweep unmatched routes with unmatched logs, disable to only match routes with logs within the window.
-    # helps use unmatched logs due to anomoly issues with syslog generation with magnum
-    sweeping: true
 
   # Magnum API
   api:

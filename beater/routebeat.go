@@ -66,8 +66,8 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		return nil, fmt.Errorf("error reading config file: %v", err)
 	}
 
-	// Initialize the log cache for 10 minutes
-	logCache = cache.NewCache(10 * time.Minute)
+	// Initialize the log cache for 40 minutes
+	logCache = cache.NewCache(40 * time.Minute)
 
 	// Initialize the scheduler
 	sched, _ := gocron.NewScheduler()
@@ -463,6 +463,8 @@ func (bt *routebeat) AnalyzeLogCollection(src, dst string, event *beat.Event) er
 		return fmt.Errorf("source or destination is blank")
 	}
 
+	var swept bool = false
+
 	logs, err := db.SearchLogs(src, dst)
 	if err != nil {
 		if err == analytics.ErrNoResults {
@@ -479,11 +481,26 @@ func (bt *routebeat) AnalyzeLogCollection(src, dst string, event *beat.Event) er
 
 	// check if any of the logs contain the route subscribe request
 	for _, log := range logs {
-		if strings.Contains(log.Log.Syslog.Message, "request") {
+		if strings.Contains(log.Log.Syslog.Message, analytics.REQUEST_LOGS) {
 			// compare the timestamp of the request log to the event timestamp to ensure it's within a 10 second window
 			if (absDuration(event.Timestamp.Sub(log.Device.Timestamp)) <= bt.config.ES.Window) && !logCache.Exists(log.Id) {
 				request = log
 				break
+			}
+		}
+	}
+
+	// No request log was found with the configured window and if sweeping is enabled,
+	// then we can look for a request log that is outside the window but within the last 20 minutes and use that as the request log.
+	// This is to handle cases where this is a non route notification and there are syslog message with no matched notifications.
+	if request.Device.Timestamp.IsZero() && bt.config.ES.Sweeping {
+		for _, log := range logs {
+			if strings.Contains(log.Log.Syslog.Message, analytics.REQUEST_LOGS) {
+				if !logCache.Exists(log.Id) {
+					request = log
+					swept = true
+					break
+				}
 			}
 		}
 	}
@@ -493,8 +510,15 @@ func (bt *routebeat) AnalyzeLogCollection(src, dst string, event *beat.Event) er
 	}
 
 	// check if any of the logs contain the route subscribe complete
-	for _, log := range logs {
-		if strings.Contains(log.Log.Syslog.Message, "Complete") {
+	for i, log := range logs {
+		if strings.Contains(log.Log.Syslog.Message, analytics.COMPLETION_LOGS) {
+			// check that if the previous log is a request log and is the matched request log
+			// ensures that a request log isn't orphaned without a completion log. If so, then mark the request log id in the cache to prevent future matches and return no completed logs error to prevent publishing an event with just a request log and no completion log.
+			if i > 0 && strings.Contains(logs[i-1].Log.Syslog.Message, analytics.REQUEST_LOGS) && logs[i-1].Id != request.Id {
+				logCache.Add(request.Id)
+				return ErrOrphanedRequest
+			}
+
 			// compare the timestamp of the complete log that it's greater than the request time and the log is not in cache.
 			if log.Device.Timestamp.After(request.Device.Timestamp) && !logCache.Exists(log.Id) {
 				complete = log
@@ -531,6 +555,8 @@ func (bt *routebeat) AnalyzeLogCollection(src, dst string, event *beat.Event) er
 	})
 
 	event.PutValue("matched", true)
+
+	event.PutValue("swept", swept)
 
 	// replace the event timestamp with the request log timestamp
 	event.Timestamp = request.Device.Timestamp
