@@ -512,15 +512,18 @@ func (bt *routebeat) AnalyzeLogCollection(src, dst string, event *beat.Event) er
 	// check if any of the logs contain the route subscribe complete
 	for i, log := range logs {
 		if strings.Contains(log.Log.Syslog.Message, analytics.COMPLETION_LOGS) {
-			// check that if the previous log is a request log and is the matched request log
-			// ensures that a request log isn't orphaned without a completion log. If so, then mark the request log id in the cache to prevent future matches and return no completed logs error to prevent publishing an event with just a request log and no completion log.
-			if i > 0 && strings.Contains(logs[i-1].Log.Syslog.Message, analytics.REQUEST_LOGS) && logs[i-1].Id != request.Id {
-				logCache.Add(request.Id)
-				return ErrOrphanedRequest
-			}
-
 			// compare the timestamp of the complete log that it's greater than the request time and the log is not in cache.
 			if log.Device.Timestamp.After(request.Device.Timestamp) && !logCache.Exists(log.Id) {
+				// check that if the previous log is a request log and is the matched request log
+				// ensures that a request log isn't orphaned without a completion log. If so, then mark the request log id in the cache to prevent future matches and return no completed logs error to prevent publishing an event with just a request log and no completion log.
+				if i > 0 && strings.Contains(logs[i-1].Log.Syslog.Message, analytics.REQUEST_LOGS) && logs[i-1].Id != request.Id {
+					logp.Err("Orphaned request log found for log id: %v (previous id: %v), source: %s, destination: %s, swept: %v", request.Id, logs[i-1].Id, src, dst, swept)
+					logp.Err("Orphaned log data Previous Log: (%s) Active Request: (%s)", logs[i-1].Log.Syslog.Message, request.Log.Syslog.Message)
+
+					// logCache.Add(request.Id)
+					// request = logs[i-1]
+				}
+
 				complete = log
 				break
 			}
@@ -536,7 +539,12 @@ func (bt *routebeat) AnalyzeLogCollection(src, dst string, event *beat.Event) er
 		logCache.Add(request.Id)
 	}
 	if complete.Id != "" {
-		logCache.Add(complete.Id)
+		// check if the complete log is a salvo log that contains multiple ids of other request logs. if so don't add it to the cache.
+		// if the number of occurences of "sub_dst" in the complete log message is greater than 1, then it's a salvo log and we shouldn't add it to the cache
+		// because it could be matched to multiple request logs. This is a heuristic that may need to be adjusted based on the actual log messages.
+		if strings.Count(complete.Log.Syslog.Message, "sub_dst") <= 1 {
+			logCache.Add(complete.Id)
+		}
 	}
 
 	// calculate the duration between the request and complete logs
