@@ -403,6 +403,9 @@
                 "matched": {
                     "type": "boolean"
                 },
+                "swept": {
+                    "type": "boolean"
+                },
                 "durationMs": {
                     "type": "long"
                 },

@@ -15806,6 +15806,18 @@ required: False
 
 --
 
+*`swept`*::
++
+--
+Indicates if the route is swept with logs
+
+
+type: boolean
+
+required: False
+
+--
+
 *`durationMs`*::
 +
 --
