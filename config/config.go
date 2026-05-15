@@ -33,16 +33,18 @@ type Elasticsearch struct {
 }
 
 type Config struct {
-	Period  time.Duration  `config:"period"`
-	Tags    []string       `config:"tags"`
-	Mapping *Mapping       `config:"mapping"`
-	API     MagnumAPI      `config:"api"`
-	ES      *Elasticsearch `config:"elasticsearch"`
+	Period            time.Duration  `config:"period"`
+	Tags              []string       `config:"tags"`
+	PhysicalRouteTags []string       `config:"physical_route_tags"`
+	Mapping           *Mapping       `config:"mapping"`
+	API               MagnumAPI      `config:"api"`
+	ES                *Elasticsearch `config:"elasticsearch"`
 }
 
 var DefaultConfig = Config{
-	Period: 10 * time.Second,
-	Tags:   []string{},
+	Period:            10 * time.Second,
+	Tags:              []string{},
+	PhysicalRouteTags: []string{},
 	API: MagnumAPI{
 		Url:           "https://129.153.131.121/graphql/v1.1",
 		Limit:         2000,

@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/elastic-agent-libs/logp"
@@ -72,7 +74,9 @@ func getSrcDstIds(event *beat.Event) (srcId, dstId string, err error) {
 }
 
 // HandleAnalyzeLogError logs the appropriate message for AnalyzeLogCollection errors.
-func HandleAnalyzeLogError(err error, srcId, dstId string, event *beat.Event) {
+func HandleAnalyzeLogError(err error, event *beat.Event) {
+	srcId, dstId, _ := getSrcDstIds(event)
+
 	if errors.Is(err, ErrNoLogsFound) {
 		logp.Debug("AnalyzeLogCollection", "No logs found for event with srcId: %s and dstId: %s", srcId, dstId)
 	} else if errors.Is(err, ErrNoRequestLogs) {
@@ -82,4 +86,31 @@ func HandleAnalyzeLogError(err error, srcId, dstId string, event *beat.Event) {
 	} else {
 		logp.Err("Failed to analyze log collection for event: %v %s", event, err.Error())
 	}
+}
+
+// Extracts output from magnum port terminal by the last number from a string like "[111,8,2,32]".
+func ExtractOutputFromPort(s string) (int, error) {
+	trimmed := strings.TrimFunc(s, func(r rune) bool {
+		return !unicode.IsDigit(r) && r != ',' && r != '-'
+	})
+	parts := strings.Split(trimmed, ",")
+	if len(parts) == 0 {
+		return 0, fmt.Errorf("no numbers found")
+	}
+	last := strings.TrimSpace(parts[len(parts)-1])
+	return strconv.Atoi(last)
+}
+
+// ExtractMulticastAddress extracts the multicast IP address from a string like "DST IP: 239.32.103.143:5004".
+func ExtractMulticastAddress(s string) (string, error) {
+	prefix := "DST IP: "
+	if !strings.HasPrefix(s, prefix) {
+		return "", fmt.Errorf("string does not start with expected prefix: %s", prefix)
+	}
+	addrPort := strings.TrimPrefix(s, prefix)
+	parts := strings.Split(addrPort, ":")
+	if len(parts) < 1 {
+		return "", fmt.Errorf("invalid address format")
+	}
+	return parts[0], nil
 }

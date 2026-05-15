@@ -27,26 +27,11 @@ const (
 	CLIENT_TIMEOUT = 10 // time in seconds
 )
 
-type EventType int
-
-const (
-	Query EventType = iota
-	Notification
-)
-
-var eventName = map[EventType]string{
-	Query:        "query",
-	Notification: "notification",
-}
-
-func (et EventType) String() string {
-	return eventName[et]
-}
-
 var (
-	db        analytics.SearchInterface
-	logCache  *cache.Cache
-	scheduler gocron.Scheduler
+	db              analytics.SearchInterface
+	scheduler       gocron.Scheduler
+	logCache        = cache.NewCacheMap[string, any](40 * time.Minute)
+	busRoutingCache = cache.NewCacheMap[string, SlabMap](0)
 )
 
 // routebeat configuration.
@@ -66,9 +51,6 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		return nil, fmt.Errorf("error reading config file: %v", err)
 	}
 
-	// Initialize the log cache for 40 minutes
-	logCache = cache.NewCache(40 * time.Minute)
-
 	// Initialize the scheduler
 	sched, _ := gocron.NewScheduler()
 	scheduler = sched
@@ -78,6 +60,10 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 	// Validate there is atleast 1 tag
 	if len(c.Tags) < 1 {
 		return nil, errors.New("beat requires atleast 1 tag in the configuration")
+	}
+
+	if len(c.PhysicalRouteTags) < 1 {
+		return nil, errors.New("beat requires atleast 1 physical route tag in the configuration")
 	}
 
 	// Validate if mapping is enabled then the nameset is not blank
@@ -153,18 +139,37 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		}).
 		OnDisconnected(func() {
 			logp.Warn("subscription client disconnected")
+		}).
+		OnConnected(func() {
+			logp.Info("subscription client connected")
+		}).
+		OnSubscriptionComplete(func(sub graphql.Subscription) {
+			logp.Info("subcription terminated %s", sub.GetID())
 		})
 	defer bt.subClient.Close()
 
 	// check if subscriptions are enabled in the config and subscribe to tags
 	if bt.config.API.Notifications {
-		var query SubscriptionTerminalsUpdated
+		var queryForSubs SubscriptionTerminalsUpdated
 
 		// make a subscription query for each tag
 		for _, tag := range bt.config.Tags {
-			subscriptionId, err := bt.SubscribeTerminals(query, tag)
+			subscriptionId, err := bt.SubscribeTerminals(queryForSubs, tag, Notification)
 			if err != nil {
 				logp.Err("error creating subscription for Tag: %s", tag)
+				continue
+			}
+
+			bt.subIds = append(bt.subIds, subscriptionId)
+		}
+
+		var queryForPhysical SubscriptionTerminalsUpdated
+
+		// make a subscription query for physical route updates for each physical route tag
+		for _, tag := range bt.config.PhysicalRouteTags {
+			subscriptionId, err := bt.SubscribeTerminals(queryForPhysical, tag, Scan)
+			if err != nil {
+				logp.Err("error creating physical subscription for Tag: %s", tag)
 				continue
 			}
 
@@ -174,6 +179,22 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		// start the subscriptions in the background make it reconnect on connnection lost
 		go bt.SubscriptionClientRun()
 	}
+
+	// go routine to test closing the subscription client to see if it reconnects and resubscribes properly
+	// using a ticker to close the subscription client every 5 minutes to test the reconnect and resubscribe logic in the SubscriptionClientRun() routine
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-bt.done:
+				return
+			case <-ticker.C:
+				logp.Warn("closing subscription client to test reconnect and resubscribe logic")
+				bt.subClient.Close()
+			}
+		}
+	}()
 
 	// block here until the application is terminated
 	<-bt.done
@@ -265,10 +286,14 @@ func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, d
 	}
 }
 
-func (bt *routebeat) SubscribeTerminals(query any, tag string) (string, error) {
+// SubscribeTerminals subscribes to the route subscribe notifications for a given tag and event type (Notification or Scan)
+// and processes the incoming messages to build events for the beat. The event type is used to determine how to process the
+// incoming messages and what type of events to build.
+func (bt *routebeat) SubscribeTerminals(query any, tag string, eventType EventType) (string, error) {
 	// variables
 	v := map[string]any{
-		"tag": tag,
+		"tag":   tag,
+		"isSub": (eventType == Notification), // if event type is Notification then isSub should be true, otherwise false
 	}
 
 	// subscribe to a query and run a callback function to process the messages
@@ -285,7 +310,12 @@ func (bt *routebeat) SubscribeTerminals(query any, tag string) (string, error) {
 			return nil
 		}
 
-		bt.BuildEvents(tag, data.TerminalsUpdated, Notification)
+		switch eventType {
+		case Notification:
+			bt.BuildEvents(tag, data.TerminalsUpdated, Notification)
+		case Scan:
+			bt.ScanEvents(data.TerminalsUpdated)
+		}
 
 		return nil
 	})
@@ -293,9 +323,67 @@ func (bt *routebeat) SubscribeTerminals(query any, tag string) (string, error) {
 		return "", err
 	}
 
-	logp.Info("Subscrition made for Tag: %s with Sub ID: %s", tag, id)
+	logp.Info("Subscription made for Tag: %s with Sub ID: %s", tag, id)
 
 	return id, nil
+}
+
+// ScanEvents is used to process the physical route update subscription events and update the bus routing cache
+// with the latest physical route information for each subscribed source. This cache is then used to enrich the
+// route subscribe notifications with physical route information.
+func (bt *routebeat) ScanEvents(edges []Edge) {
+	logp.Debug("ProcessResults", "Scanning %d events for physical route updates", len(edges))
+
+	for _, edge := range edges {
+		var (
+			deviceName string
+			output     int
+			subName    string
+		)
+
+		if edge.Port != nil {
+			deviceName = edge.Port.Device.Name
+
+			outputInt, err := ExtractOutputFromPort(edge.Port.Id)
+			if err != nil {
+				logp.Err("failed to extract output from port Id: %s, error: %v", edge.Port.Id, err)
+				continue
+			}
+
+			output = outputInt
+		}
+
+		// if there is a subscribed source, then find the nameset value for the subscribed source to use as the key
+		// in the bus routing cache. If there is no subscribed source, then we can't add this physical route information
+		// to the cache because we won't know which subscribed source it belongs to.
+		if edge.SubscribedSource != nil {
+			subName = findNamesetValueByName(
+				bt.config.Mapping.Nameset,
+				edge.SubscribedSource.NamesetNames,
+				bt.config.Mapping.Default,
+			)
+		}
+
+		p := SlabPartial{
+			Id:     edge.Id,
+			Name:   edge.Name,
+			Device: deviceName,
+			Output: output,
+		}
+
+		// if there is already a slab partial for this subscribed source,
+		// then add this physical route to the slab partial map for this subscribed source.
+		// otherwise, create a new slab partial map for this subscribed source with this physical route.
+		if busRoutingCache.Has(subName) {
+			busRoutingCache.DoMut(subName, func(value SlabMap) {
+				value[edge.Id] = p
+			})
+		} else {
+			busRoutingCache.Set(subName, SlabMap{edge.Id: p})
+		}
+
+		logp.Debug("ProcessResults", "ScanEvent for: %s (%s) Output: %d SubscribedSource: %s", edge.Name, deviceName, output, subName)
+	}
 }
 
 // Builds beat events based on the Edge{} struct definition
@@ -303,12 +391,14 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 	logp.Debug("ProcessResults", "Query Results for Tag: %s, Total Edges:%d, EventType %s", tag, len(edges), eventType)
 
 	var (
-		events    []beat.Event
-		buscodes  []string
-		processed int
-		discarded int
-		mapping   bool = bt.config.Mapping != nil
+		events    []beat.Event // slice to hold the events we will publish after processing all edges
+		buscodes  []string     // for logging purposes to track which bus codes we are processing events for
+		processed int          // count of how many events were processed (matched the tag and created an event)
+		discarded int          // count of how many events were discarded because they didn't match the tag
 	)
+
+	// check if mapping is enabled to determine if we need to find the nameset value for the source and destination labels
+	var mapping bool = bt.config.Mapping != nil
 
 	for _, edge := range edges {
 		// check if the tag exactly matches one of the items in tags
@@ -380,6 +470,19 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			}
 		}
 
+		// if there is a port object in the routed physical source, then add the port and device information to the event
+		if edge.RoutedPhysicalSource != nil && edge.RoutedPhysicalSource.Port != nil {
+			for _, a := range edge.RoutedPhysicalSource.Port.Addresses {
+				if !a.Backup {
+					event.PutValue("routeableTerminal.physicalSource.port", mapstr.M{
+						"address":    a.Name,
+						"streamType": a.StreamType,
+						"port":       edge.RoutedPhysicalSource.Port.Name,
+					})
+				}
+			}
+		}
+
 		// create a nested object for the SubscribedSource
 		if edge.SubscribedSource != nil {
 			m := mapstr.M{
@@ -429,16 +532,22 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			gocron.NewTask(
 				func() {
 					for i, event := range events {
-						// extract srcId and dstId from the event for log analysis
-						srcId, dstId, err := getSrcDstIds(&event)
-						if err != nil {
-							logp.Err("Failed to get srcId/dstId from event: %v, error: %s", event, err.Error())
-							continue
+						// analyze the logs for this event and enrich the event with log data if there is a match
+						if err := bt.AnalyzeLogCollection(&event); err != nil {
+							HandleAnalyzeLogError(err, &event)
 						}
 
-						// analyze the logs for this event and enrich the event with log data if there is a match
-						if err := bt.AnalyzeLogCollection(srcId, dstId, &event); err != nil {
-							HandleAnalyzeLogError(err, srcId, dstId, &event)
+						// enrich the event with physical route information from the cache if there is a destination label
+						// and physical route information in the cache for that destination label
+						if dst, err := event.GetValue("destinationLabel"); err == nil {
+							if slabs, ok := busRoutingCache.Get(dst.(string)); ok {
+								destinations := make([]any, 0, len(slabs))
+								for _, s := range slabs {
+									destinations = append(destinations, s)
+								}
+
+								event.PutValue("slab_destinations", destinations)
+							}
 						}
 
 						events[i] = event
@@ -458,9 +567,11 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, EventType: %s for: [%v]", tag, processed, discarded, eventType, strings.Join(buscodes, ","))
 }
 
-func (bt *routebeat) AnalyzeLogCollection(src, dst string, event *beat.Event) error {
-	if src == "" || dst == "" {
-		return fmt.Errorf("source or destination is blank")
+func (bt *routebeat) AnalyzeLogCollection(event *beat.Event) error {
+	// extract srcId and dstId from the event for log analysis
+	src, dst, err := getSrcDstIds(event)
+	if err != nil {
+		return fmt.Errorf("failed to get srcId/dstId from event: %v, error: %s", event, err.Error())
 	}
 
 	var swept bool = false
@@ -483,7 +594,7 @@ func (bt *routebeat) AnalyzeLogCollection(src, dst string, event *beat.Event) er
 	for _, log := range logs {
 		if strings.Contains(log.Log.Syslog.Message, analytics.REQUEST_LOGS) {
 			// compare the timestamp of the request log to the event timestamp to ensure it's within a 10 second window
-			if (absDuration(event.Timestamp.Sub(log.Device.Timestamp)) <= bt.config.ES.Window) && !logCache.Exists(log.Id) {
+			if (absDuration(event.Timestamp.Sub(log.Device.Timestamp)) <= bt.config.ES.Window) && !logCache.Has(log.Id) {
 				request = log
 				break
 			}
@@ -496,7 +607,7 @@ func (bt *routebeat) AnalyzeLogCollection(src, dst string, event *beat.Event) er
 	if request.Device.Timestamp.IsZero() && bt.config.ES.Sweeping {
 		for _, log := range logs {
 			if strings.Contains(log.Log.Syslog.Message, analytics.REQUEST_LOGS) {
-				if !logCache.Exists(log.Id) {
+				if !logCache.Has(log.Id) {
 					request = log
 					swept = true
 					break
@@ -513,7 +624,7 @@ func (bt *routebeat) AnalyzeLogCollection(src, dst string, event *beat.Event) er
 	for i, log := range logs {
 		if strings.Contains(log.Log.Syslog.Message, analytics.COMPLETION_LOGS) {
 			// compare the timestamp of the complete log that it's greater than the request time and the log is not in cache.
-			if log.Device.Timestamp.After(request.Device.Timestamp) && !logCache.Exists(log.Id) {
+			if log.Device.Timestamp.After(request.Device.Timestamp) && !logCache.Has(log.Id) {
 				// check that if the previous log is a request log and is the matched request log
 				// ensures that a request log isn't orphaned without a completion log. If so, then mark the request log id in the cache to prevent future matches and return no completed logs error to prevent publishing an event with just a request log and no completion log.
 				if i > 0 && strings.Contains(logs[i-1].Log.Syslog.Message, analytics.REQUEST_LOGS) && logs[i-1].Id != request.Id {
@@ -536,14 +647,14 @@ func (bt *routebeat) AnalyzeLogCollection(src, dst string, event *beat.Event) er
 
 	// Mark these ids as processed in the cache
 	if request.Id != "" {
-		logCache.Add(request.Id)
+		logCache.Set(request.Id, struct{}{})
 	}
 	if complete.Id != "" {
 		// check if the complete log is a salvo log that contains multiple ids of other request logs. if so don't add it to the cache.
 		// if the number of occurences of "sub_dst" in the complete log message is greater than 1, then it's a salvo log and we shouldn't add it to the cache
 		// because it could be matched to multiple request logs. This is a heuristic that may need to be adjusted based on the actual log messages.
 		if strings.Count(complete.Log.Syslog.Message, "sub_dst") <= 1 {
-			logCache.Add(complete.Id)
+			logCache.Set(complete.Id, struct{}{})
 		}
 	}
 

@@ -5,7 +5,7 @@ type QueryTerminals struct {
 }
 
 type SubscriptionTerminalsUpdated struct {
-	TerminalsUpdated []Edge `graphql:"terminalsUpdated(input: {filters: [{id: \"isDst\", booleanValue: true}, {id:\"isSub\", booleanValue: true}, {id: \"tags\", value: $tag}]})"`
+	TerminalsUpdated []Edge `graphql:"terminalsUpdated(input: {filters: [{id: \"isDst\", booleanValue: true}, {id:\"isSub\", booleanValue: $isSub}, {id: \"tags\", value: $tag}]})"`
 }
 
 type Terminals struct {
@@ -20,8 +20,33 @@ type Edge struct {
 	IsSub                     bool
 	IsDst                     bool
 	Type                      string
+	Port                      *Port
 	NamesetNames              []NamesetName
 	RouteableTerminalFragment `graphql:"... on RouteableTerminal"`
+}
+
+type Port struct {
+	Id        string
+	Name      string
+	Device    Device
+	Addresses []Addresses
+}
+
+type Device struct {
+	Id   string
+	Name string
+}
+
+type Addresses struct {
+	Id           string
+	Name         string
+	Backup       bool
+	StreamType   string
+	EthernetPort *EthernetPort
+}
+
+type EthernetPort struct {
+	Id string
 }
 
 type NamesetName struct {
@@ -46,6 +71,7 @@ type RoutedPhysicalSource struct {
 	IsSrc        bool
 	Tags         []string
 	NamesetNames []NamesetName
+	Port         *Port
 }
 
 type SubscribedSource struct {
@@ -62,6 +88,14 @@ query {
     	totalCount
     	edges(limit: 2000) {
 			id name tags isSub isDst type
+			port {
+				id
+				name
+				device {
+					id
+					name
+				}
+			}
 			... on RouteableTerminal {
 				routedPhysicalSource {
 					id name isSrc
