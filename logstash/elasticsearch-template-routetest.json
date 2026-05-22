@@ -403,6 +403,40 @@
                 "matched": {
                     "type": "boolean"
                 },
+                "matchedLogs": {
+                    "properties": {
+                        "log": {
+                            "ignore_above": 1024,
+                            "type": "keyword"
+                        },
+                        "time": {
+                            "type": "date"
+                        },
+                        "type": {
+                            "ignore_above": 1024,
+                            "type": "keyword"
+                        }
+                    }
+                },
+                "slab_destinations": {
+                    "properties": {
+                        "Device": {
+                            "ignore_above": 1024,
+                            "type": "keyword"
+                        },
+                        "Id": {
+                            "ignore_above": 1024,
+                            "type": "keyword"
+                        },
+                        "Name": {
+                            "ignore_above": 1024,
+                            "type": "keyword"
+                        },
+                        "Output": {
+                            "type": "long"
+                        }
+                    }
+                },
                 "swept": {
                     "type": "boolean"
                 },

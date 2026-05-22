@@ -74,32 +74,44 @@
       required: false
       description: >
         Duration between request logs and complete logs in milliseconds
-    - name: logs
+    - name: slab_destinations
       type: group
       fields: 
-        - name: request
-          type: group
-          fields:
-            - name: time
-              type: date
-              required: false
-              description: >
-                Log request timestamp
-            - name: message
-              type: keyword
-              required: false
-              description: >
-                Log request message
-        - name: complete
-          type: group
-          fields:
-            - name: time
-              type: date
-              required: false
-              description: >
-                Log complete timestamp
-            - name: message
-              type: keyword
-              required: false
-              description: >
-                Log complete message
+        - name: Id
+          type: keyword
+          required: false
+          description: >
+            UUID of the device
+        - name: Device
+          type: keyword
+          required: false
+          description: >
+            Magnum Device Name
+        - name: Name
+          type: keyword
+          required: false
+          description: >
+            Magnum Terminal Name
+        - name: Output
+          type: integer
+          required: false
+          description: >
+            Device Output
+    - name: matchedLogs
+      type: group
+      fields: 
+        - name: time
+          type: date
+          required: false
+          description: >
+            Log Date
+        - name: log
+          type: keyword
+          required: false
+          description: >
+            Log message
+        - name: type
+          type: keyword
+          required: false
+          description: >
+            Log type, either scheduler, magnum or slab

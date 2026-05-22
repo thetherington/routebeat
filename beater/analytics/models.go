@@ -2,10 +2,22 @@ package analytics
 
 import "time"
 
+// MultiLogResults maps each query's Key() to the slice of Source hits returned for it.
+type MultiLogResults map[string][]Source
+
 type Source struct {
-	Id     string `json:"-"`
-	Device Device `json:"device"`
-	Log    Log    `json:"log"`
+	Id         string     `json:"-"`
+	Annotation Annotation `json:"annotation"`
+	Device     Device     `json:"device"`
+	Log        Log        `json:"log"`
+}
+
+type Annotation struct {
+	General General `json:"general"`
+}
+
+type General struct {
+	DeviceName string `json:"device_name"`
 }
 
 type Device struct {

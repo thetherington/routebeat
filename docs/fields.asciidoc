@@ -15831,23 +15831,10 @@ required: False
 --
 
 
-
-*`logs.request.time`*::
+*`slab_destinations.Id`*::
 +
 --
-Log request timestamp
-
-
-type: date
-
-required: False
-
---
-
-*`logs.request.message`*::
-+
---
-Log request message
+UUID of the device
 
 
 type: keyword
@@ -15856,11 +15843,47 @@ required: False
 
 --
 
-
-*`logs.complete.time`*::
+*`slab_destinations.Device`*::
 +
 --
-Log complete timestamp
+Magnum Device Name
+
+
+type: keyword
+
+required: False
+
+--
+
+*`slab_destinations.Name`*::
++
+--
+Magnum Terminal Name
+
+
+type: keyword
+
+required: False
+
+--
+
+*`slab_destinations.Output`*::
++
+--
+Device Output
+
+
+type: integer
+
+required: False
+
+--
+
+
+*`matchedLogs.time`*::
++
+--
+Log Date
 
 
 type: date
@@ -15869,10 +15892,22 @@ required: False
 
 --
 
-*`logs.complete.message`*::
+*`matchedLogs.log`*::
 +
 --
-Log complete message
+Log message
+
+
+type: keyword
+
+required: False
+
+--
+
+*`matchedLogs.type`*::
++
+--
+Log type, either scheduler, magnum or slab
 
 
 type: keyword

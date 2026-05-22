@@ -182,19 +182,19 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 
 	// go routine to test closing the subscription client to see if it reconnects and resubscribes properly
 	// using a ticker to close the subscription client every 5 minutes to test the reconnect and resubscribe logic in the SubscriptionClientRun() routine
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-bt.done:
-				return
-			case <-ticker.C:
-				logp.Warn("closing subscription client to test reconnect and resubscribe logic")
-				bt.subClient.Close()
-			}
-		}
-	}()
+	// go func() {
+	// 	ticker := time.NewTicker(5 * time.Minute)
+	// 	defer ticker.Stop()
+	// 	for {
+	// 		select {
+	// 		case <-bt.done:
+	// 			return
+	// 		case <-ticker.C:
+	// 			logp.Warn("closing subscription client to test reconnect and resubscribe logic")
+	// 			bt.subClient.Close()
+	// 		}
+	// 	}
+	// }()
 
 	// block here until the application is terminated
 	<-bt.done
@@ -332,7 +332,7 @@ func (bt *routebeat) SubscribeTerminals(query any, tag string, eventType EventTy
 // with the latest physical route information for each subscribed source. This cache is then used to enrich the
 // route subscribe notifications with physical route information.
 func (bt *routebeat) ScanEvents(edges []Edge) {
-	logp.Debug("ProcessResults", "Scanning %d events for physical route updates", len(edges))
+	logp.Debug("ScanEvents", "Scanning %d events for physical route updates", len(edges))
 
 	for _, edge := range edges {
 		var (
@@ -382,7 +382,7 @@ func (bt *routebeat) ScanEvents(edges []Edge) {
 			busRoutingCache.Set(subName, SlabMap{edge.Id: p})
 		}
 
-		logp.Debug("ProcessResults", "ScanEvent for: %s (%s) Output: %d SubscribedSource: %s", edge.Name, deviceName, output, subName)
+		logp.Debug("ScanEvents", "ScanEvent for: %s (%s) Output: %d SubscribedSource: %s", edge.Name, deviceName, output, subName)
 	}
 }
 
@@ -539,8 +539,8 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 						// enrich the event with physical route information from the cache if there is a destination label
 						// and physical route information in the cache for that destination label
-						if dst, err := event.GetValue("destinationLabel"); err == nil {
-							if slabs, ok := busRoutingCache.Get(dst.(string)); ok {
+						if busname, err := ExtractStringFromEvent(&event, "destinationLabel"); err == nil {
+							if slabs, ok := busRoutingCache.Get(busname); ok {
 								destinations := make([]any, 0, len(slabs))
 								for _, s := range slabs {
 									destinations = append(destinations, s)
@@ -568,117 +568,123 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 }
 
 func (bt *routebeat) AnalyzeLogCollection(event *beat.Event) error {
+	type logEntry struct {
+		Log  string    `json:"log"`
+		Time time.Time `json:"time"`
+		Type string    `json:"type"`
+	}
+
+	matchedLogMessages := make([]logEntry, 0)
+
+	var (
+		haveSlabLogs bool
+		haveSchedLog bool
+	)
+
+	// defer putting the matched log messages in the event until the end of the function so that we can
+	// ensure that we capture all of the matched logs from the different queries and matching functions
+	// and put them in the event at once. This will allow us to have a complete set of matched logs for
+	// this event when we analyze the logs for keywords and patterns.
+	defer func() {
+		if len(matchedLogMessages) > 0 {
+			event.PutValue("matchedLogs", matchedLogMessages)
+		}
+	}()
+
 	// extract srcId and dstId from the event for log analysis
-	src, dst, err := getSrcDstIds(event)
+	srcId, dstId, err := getSrcDstIds(event)
 	if err != nil {
 		return fmt.Errorf("failed to get srcId/dstId from event: %v, error: %s", event, err.Error())
 	}
 
-	var swept bool = false
-
-	logs, err := db.SearchLogs(src, dst)
-	if err != nil {
-		if err == analytics.ErrNoResults {
-			return ErrNoLogsFound
-		}
-
-		return fmt.Errorf("failed to find logs for event: %v", err)
-	}
-
-	var (
-		request  analytics.Source
-		complete analytics.Source
-	)
-
-	// check if any of the logs contain the route subscribe request
-	for _, log := range logs {
-		if strings.Contains(log.Log.Syslog.Message, analytics.REQUEST_LOGS) {
-			// compare the timestamp of the request log to the event timestamp to ensure it's within a 10 second window
-			if (absDuration(event.Timestamp.Sub(log.Device.Timestamp)) <= bt.config.ES.Window) && !logCache.Has(log.Id) {
-				request = log
-				break
-			}
-		}
-	}
-
-	// No request log was found with the configured window and if sweeping is enabled,
-	// then we can look for a request log that is outside the window but within the last 20 minutes and use that as the request log.
-	// This is to handle cases where this is a non route notification and there are syslog message with no matched notifications.
-	if request.Device.Timestamp.IsZero() && bt.config.ES.Sweeping {
-		for _, log := range logs {
-			if strings.Contains(log.Log.Syslog.Message, analytics.REQUEST_LOGS) {
-				if !logCache.Has(log.Id) {
-					request = log
-					swept = true
-					break
-				}
-			}
-		}
-	}
-
-	if request.Device.Timestamp.IsZero() {
-		return ErrNoRequestLogs
-	}
-
-	// check if any of the logs contain the route subscribe complete
-	for i, log := range logs {
-		if strings.Contains(log.Log.Syslog.Message, analytics.COMPLETION_LOGS) {
-			// compare the timestamp of the complete log that it's greater than the request time and the log is not in cache.
-			if log.Device.Timestamp.After(request.Device.Timestamp) && !logCache.Has(log.Id) {
-				// check that if the previous log is a request log and is the matched request log
-				// ensures that a request log isn't orphaned without a completion log. If so, then mark the request log id in the cache to prevent future matches and return no completed logs error to prevent publishing an event with just a request log and no completion log.
-				if i > 0 && strings.Contains(logs[i-1].Log.Syslog.Message, analytics.REQUEST_LOGS) && logs[i-1].Id != request.Id {
-					logp.Err("Orphaned request log found for log id: %v (previous id: %v), source: %s, destination: %s, swept: %v", request.Id, logs[i-1].Id, src, dst, swept)
-					logp.Err("Orphaned log data Previous Log: (%s) Active Request: (%s)", logs[i-1].Log.Syslog.Message, request.Log.Syslog.Message)
-
-					// logCache.Add(request.Id)
-					// request = logs[i-1]
-				}
-
-				complete = log
-				break
-			}
-		}
-	}
-
-	if complete.Device.Timestamp.IsZero() {
-		return ErrNoCompletedLogs
-	}
-
-	// Mark these ids as processed in the cache
-	if request.Id != "" {
-		logCache.Set(request.Id, struct{}{})
-	}
-	if complete.Id != "" {
-		// check if the complete log is a salvo log that contains multiple ids of other request logs. if so don't add it to the cache.
-		// if the number of occurences of "sub_dst" in the complete log message is greater than 1, then it's a salvo log and we shouldn't add it to the cache
-		// because it could be matched to multiple request logs. This is a heuristic that may need to be adjusted based on the actual log messages.
-		if strings.Count(complete.Log.Syslog.Message, "sub_dst") <= 1 {
-			logCache.Set(complete.Id, struct{}{})
-		}
-	}
-
-	// calculate the duration between the request and complete logs
-	event.PutValue("durationMs", complete.Device.Timestamp.Sub(request.Device.Timestamp).Milliseconds())
-
-	// add the request and complete log information to the event
-	event.PutValue("logs", mapstr.M{
-		"request": mapstr.M{
-			"time":    request.Device.Timestamp,
-			"message": request.Log.Syslog.Message,
-		},
-		"complete": mapstr.M{
-			"time":    complete.Device.Timestamp,
-			"message": complete.Log.Syslog.Message,
-		},
+	// search for magnum logs that match the source and destination in the event within the configured time window
+	magnumLogs, err := ProcessMagnumLogs(&MagnumLogsOptions{
+		src:       srcId,
+		dst:       dstId,
+		sweeping:  bt.config.ES.Sweeping,
+		eventTime: event.Timestamp,
+		window:    bt.config.ES.Window,
 	})
+	if err != nil {
+		return err
+	}
 
 	event.PutValue("matched", true)
-
-	event.PutValue("swept", swept)
+	event.PutValue("swept", magnumLogs.Swept)
 
 	// replace the event timestamp with the request log timestamp
-	event.Timestamp = request.Device.Timestamp
+	event.Timestamp = magnumLogs.Request.Device.Timestamp
+
+	// put the matched logs in the event under the "matchedLogs" key.
+	// This will allow us to easily search for keywords in the log messages across all of the
+	// relevant logs for this event without having to search within nested objects in elasticsearch.
+	matchedLogMessages = append(matchedLogMessages,
+		logEntry{Log: magnumLogs.Request.Log.Syslog.Message, Time: magnumLogs.Request.Device.Timestamp, Type: "magnum"},
+		logEntry{Log: magnumLogs.Complete.Log.Syslog.Message, Time: magnumLogs.Complete.Device.Timestamp, Type: "magnum"},
+	)
+
+	// collect the logs for each slab in the physical route as well as the scheduler logs for the overall route
+	// by executing multi-search queries using the QueryLogsFromEvent function.
+	// The QueryLogsFromEvent function will return a map of log results for each query keyed by the query's Key() value.
+	// If there are no results found for any of the queries, then return an error since we won't have any logs to analyze for this event.
+	logCollection, err := QueryLogsFromEvent(context.Background(), event)
+	if err != nil {
+		return err
+	}
+
+	// match the slab logs for this event by comparing the timestamps of the slab logs to the timestamp of the
+	// route completion log and ensuring that they are within the configured time window and not in the cache.
+	// If there are no matched slab logs found, then return an error since we won't have any logs to analyze for this event.
+	slabLogs, err := MatchSlabLogs(&MatchLogArgs{
+		logCollection: logCollection,
+		reference:     magnumLogs.Request.Device.Timestamp,
+		window:        bt.config.ES.Window,
+	})
+	if err == nil {
+		for _, s := range slabLogs {
+			matchedLogMessages = append(matchedLogMessages,
+				logEntry{
+					Log:  fmt.Sprintf("%s %s", s.Annotation.General.DeviceName, s.Log.Syslog.Message),
+					Time: s.Device.Timestamp, Type: "slab",
+				},
+			)
+		}
+
+		haveSlabLogs = true
+	}
+
+	// match the scheduler route request log for this event by comparing the timestamps of the scheduler logs to the
+	// timestamp of the route request log and ensuring that they are within the configured time window and not in the cache.
+	// If there is no matched scheduler route request log found, then log a debug message but do not return an error since we
+	// can still analyze the slab and magnum logs for this event without the scheduler logs. add the log to the begining of the matchedLogMessages slice
+	schedulerLog, err := MatchSchedulerRouteLog(&MatchLogArgs{
+		logCollection: logCollection,
+		reference:     magnumLogs.Request.Device.Timestamp,
+		window:        5 * time.Second, // smaller window for matching the scheduler log since it should be very close to the request log timestamp
+	})
+	if err == nil {
+		matchedLogMessages = append([]logEntry{
+			{Log: schedulerLog.Log.Syslog.Message, Time: schedulerLog.Device.Timestamp, Type: "scheduler"},
+		}, matchedLogMessages...)
+
+		// replace the event timestamp with the scheduler log timestamp since this is when the route began
+		event.Timestamp = schedulerLog.Device.Timestamp
+		haveSchedLog = true
+	}
+
+	// if we have both slab logs and a scheduler log,
+	// then we can calculate the duration of the route from the scheduler log timestamp to the
+	// last slab log timestamp and put that in the event under the "durationMs" key.
+
+	// This will allow us to easily search for long duration routes in elasticsearch
+	// without having to analyze the log messages for keywords related to long durations.
+	if haveSlabLogs && haveSchedLog {
+		// calculate the duration between the request and complete logs
+		first := matchedLogMessages[0].Time
+		last := matchedLogMessages[len(matchedLogMessages)-1].Time
+
+		event.PutValue("durationMs", last.Sub(first).Milliseconds())
+	}
 
 	return nil
 }

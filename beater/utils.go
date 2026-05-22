@@ -53,14 +53,14 @@ func absDuration(d time.Duration) time.Duration {
 func getSrcDstIds(event *beat.Event) (srcId, dstId string, err error) {
 	dst, err := event.GetValue("dstId")
 	if err != nil {
-		return "", "", fmt.Errorf("failed to get dstId: %w", err)
+		return "", "", fmt.Errorf("event.GetValue: failed to get dstId: %w", err)
 	}
 
 	src, err := event.GetValue("routeableTerminal.subscribedSource.srcId")
 	if err != nil {
 		src, err = event.GetValue("routeableTerminal.physicalSource.srcId")
 		if err != nil {
-			return "", "", fmt.Errorf("failed to get srcId: %w", err)
+			return "", "", fmt.Errorf("event.GetValue: failed to get srcId: %w", err)
 		}
 	}
 
@@ -101,8 +101,8 @@ func ExtractOutputFromPort(s string) (int, error) {
 	return strconv.Atoi(last)
 }
 
-// ExtractMulticastAddress extracts the multicast IP address from a string like "DST IP: 239.32.103.143:5004".
-func ExtractMulticastAddress(s string) (string, error) {
+// ParseMulticastAddress extracts the multicast IP address from a string like "DST IP: 239.32.103.143:5004".
+func ParseMulticastAddress(s string) (string, error) {
 	prefix := "DST IP: "
 	if !strings.HasPrefix(s, prefix) {
 		return "", fmt.Errorf("string does not start with expected prefix: %s", prefix)
@@ -113,4 +113,17 @@ func ExtractMulticastAddress(s string) (string, error) {
 		return "", fmt.Errorf("invalid address format")
 	}
 	return parts[0], nil
+}
+
+// ExtractStringFromEvent extracts a string value from the event for the given field path.
+func ExtractStringFromEvent(event *beat.Event, fieldPath string) (string, error) {
+	value, err := event.GetValue(fieldPath)
+	if err != nil {
+		return "", fmt.Errorf("event.GetValue: error: %s", err.Error())
+	}
+	str, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("%s is not a string", fieldPath)
+	}
+	return str, nil
 }
