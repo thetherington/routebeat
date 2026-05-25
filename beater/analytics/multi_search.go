@@ -98,7 +98,7 @@ func (es *ESSearch) SearchMultiLogs(ctx context.Context, queries ...MultiLogQuer
 				},
 			},
 			Source_: &types.SourceFilter{
-				Includes: []string{"log.syslog.message", "device.timestamp", "annotation.general.device_name"},
+				Includes: []string{"@timestamp", "log.syslog.message", "device.timestamp", "annotation.general.device_name"},
 			},
 			Size: esapi.IntPtr(3000),
 		}
@@ -146,15 +146,20 @@ func (es *ESSearch) SearchMultiLogs(ctx context.Context, queries ...MultiLogQuer
 			// Scheduler logs have UTC timestamps, so no adjustment is needed.
 			// Future: possibly detect timezone based on current time and adjust accordingly
 			case *SlabLogConfig:
-				loc, _ := time.LoadLocation("America/New_York") // handles EST/EDT
-				t := src.Device.Timestamp
-				fixed := time.Date(
-					t.Year(), t.Month(), t.Day(),
-					t.Hour(), t.Minute(), t.Second(), t.Nanosecond(),
-					loc,
-				)
-				src.Device.Timestamp = fixed.UTC()
+				if es.TimeZoneFix {
+					loc, _ := time.LoadLocation("America/New_York") // handles EST/EDT
+					t := src.Device.Timestamp
+					fixed := time.Date(
+						t.Year(), t.Month(), t.Day(),
+						t.Hour(), t.Minute(), t.Second(), t.Nanosecond(),
+						loc,
+					)
+					src.Device.Timestamp = fixed.UTC()
+				}
 
+				if es.UseLogIngestTimestamp {
+					src.Device.Timestamp = src.Timestamp
+				}
 			case *SchedulerLogConfig:
 				// future: custom adjustments for scheduler log hits
 			}

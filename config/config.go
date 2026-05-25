@@ -30,6 +30,12 @@ type Elasticsearch struct {
 	Delay    time.Duration `config:"delay"`
 	Window   time.Duration `config:"window"`
 	Sweeping bool          `config:"sweeping"`
+	Dev      DevFlags      `config:"dev"`
+}
+
+type DevFlags struct {
+	UseLogIngestTimestamp bool `config:"use_log_ingest_timestamp"`
+	SwapSlabLogTimezone   bool `config:"swap_slab_log_timezone"`
 }
 
 type Config struct {

@@ -77,9 +77,11 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 	if c.ES != nil {
 		var err error
 		db, err = analytics.NewClient(&analytics.ClientConfig{
-			Address: c.ES.Address,
-			Index:   c.ES.Index,
-			Strict:  c.ES.Strict,
+			Address:               c.ES.Address,
+			Index:                 c.ES.Index,
+			Strict:                c.ES.Strict,
+			UseLogIngestTimestamp: c.ES.Dev.UseLogIngestTimestamp,
+			TimeZoneFix:           c.ES.Dev.SwapSlabLogTimezone,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create elasticsearch client: %w", err)

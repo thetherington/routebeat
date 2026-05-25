@@ -41,6 +41,13 @@ routebeat:
     # helps use unmatched logs due to anomoly issues with syslog generation with magnum
     sweeping: true
 
+    dev:
+      # Whether to use the log ingest timestamp instead of the log event timestamp for matching with route notifications. This can help with log timestamp issues in magnum.
+      use_log_ingest_timestamp: true
+
+      # Whether to swap the timezone of slab logs from EST/EDT to UTC to match the scheduler logs timezone. This can help with log timestamp issues in magnum.
+      # swap_slab_log_timezone: true
+
   # Magnum API
   api:
     url: "https://129.213.88.5/graphql/v1.1"

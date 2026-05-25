@@ -7,6 +7,7 @@ type MultiLogResults map[string][]Source
 
 type Source struct {
 	Id         string     `json:"-"`
+	Timestamp  time.Time  `json:"@timestamp"`
 	Annotation Annotation `json:"annotation"`
 	Device     Device     `json:"device"`
 	Log        Log        `json:"log"`

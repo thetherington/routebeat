@@ -21,16 +21,20 @@ type SearchInterface interface {
 }
 
 type ClientConfig struct {
-	Address string
-	Index   string
-	Strict  bool
+	Address               string
+	Index                 string
+	Strict                bool
+	UseLogIngestTimestamp bool
+	TimeZoneFix           bool
 }
 
 type ESSearch struct {
-	client  *elasticsearch.TypedClient
-	index   string
-	request *search.Request
-	Strict  bool
+	client                *elasticsearch.TypedClient
+	index                 string
+	request               *search.Request
+	Strict                bool
+	UseLogIngestTimestamp bool
+	TimeZoneFix           bool
 }
 
 func StringPtr(s string) *string { return &s }
@@ -46,8 +50,10 @@ func NewClient(cfg *ClientConfig) (SearchInterface, error) {
 
 	// Implementation for creating a new Elasticsearch client goes here
 	return &ESSearch{
-		client: typedClient,
-		index:  cfg.Index,
-		Strict: cfg.Strict,
+		client:                typedClient,
+		index:                 cfg.Index,
+		Strict:                cfg.Strict,
+		UseLogIngestTimestamp: cfg.UseLogIngestTimestamp,
+		TimeZoneFix:           cfg.TimeZoneFix,
 	}, nil
 }
