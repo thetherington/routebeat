@@ -76,6 +76,8 @@ func (es *ESSearch) QuerySchedulerEventParams(ctx context.Context) (BusRouteMap,
 
 	// fmt.Printf("%+v\n", resp)
 
+	// "aggregations": { "bus_name": { "doc_count_error_upper_bound": 0, "sum_other_doc_count": 0, "buckets": [] }}
+
 	// Cast the "bus_name" aggregation response into the StringTermsAggregate
 	stringTermsAgg, ok := resp.Aggregations["bus_name"].(*types.StringTermsAggregate)
 	if !ok {

@@ -20,23 +20,23 @@ routebeat:
   tda: "BSITAL"
 
   # Tag for the Zorro sources.
-  zorro: "zorro"
+  zorro: "ZORRO"
 
   # Magnum API
   api:
-    url: "https://129.153.131.121/graphql/v1.1"
+    url: "https://129.213.88.5/graphql/v1.1"
     
     # Get route notifications via the subscriptions
     notifications: true
 
     # Limit the number of destinations in the API query results
     limit: 2000
-    
+
     # Magnum OIDC Authentication
     auth:
       client_id: "insite-poller"
-      client_secret: "RPLoQg5f0iuZ75QYc7KCUF4GgOmFEEYH"
-      token_url: "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token"
+      client_secret: "gpJ2WSbjBOD1HoZxpTYGaqKdqeBD1mll"
+      token_url: "https://129.213.88.5/auth/realms/magnum/protocol/openid-connect/token"
 
   elasticsearch:
     # Elasticsearch server node url

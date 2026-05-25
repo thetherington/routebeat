@@ -600,7 +600,8 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	case srcLabel == routing.Pri:
 		currentState = Primary
 
-	case srcLabel == routing.Sec:
+	// if the secondary label matches the source label and it's not blank, then it's in backup state
+	case srcLabel == routing.Sec && routing.Sec != "":
 		currentState = Backup
 
 	case slices.Contains(srcTags, bt.config.Zorro):
