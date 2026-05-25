@@ -32,6 +32,8 @@ var (
 	scheduler       gocron.Scheduler
 	logCache        = cache.NewCacheMap[string, any](40 * time.Minute)
 	busRoutingCache = cache.NewCacheMap[string, SlabMap](0)
+
+	lastNotificationTime time.Time
 )
 
 // routebeat configuration.
@@ -182,21 +184,34 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		go bt.SubscriptionClientRun()
 	}
 
-	// go routine to test closing the subscription client to see if it reconnects and resubscribes properly
-	// using a ticker to close the subscription client every 5 minutes to test the reconnect and resubscribe logic in the SubscriptionClientRun() routine
-	// go func() {
-	// 	ticker := time.NewTicker(5 * time.Minute)
-	// 	defer ticker.Stop()
-	// 	for {
-	// 		select {
-	// 		case <-bt.done:
-	// 			return
-	// 		case <-ticker.C:
-	// 			logp.Warn("closing subscription client to test reconnect and resubscribe logic")
-	// 			bt.subClient.Close()
-	// 		}
-	// 	}
-	// }()
+	// start a go routine to monitor the time since the last notification was received
+	// and close the subscription client if it has been more than 60 minutes since the
+	// last notification was received to resubscribe to the subscriptions and run the reconnect logic of the subscription client
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+
+		// initialize the last notification time to now so that we don't
+		//  immediately close the subscription client on startup before we receive any notifications
+		lastNotificationTime = time.Now()
+
+		for {
+			select {
+			case <-bt.done:
+				return
+			case <-ticker.C:
+				// if it has been more than 120 minutes since the last notification was received, then close the subscription client
+				if time.Since(lastNotificationTime) > 120*time.Minute {
+					logp.Info("closing subscription client to test reconnect logic, last notification received at: %s", lastNotificationTime.Format(time.RFC3339))
+					bt.subClient.Close()
+
+					// reset the last notification time to now after closing the subscription client so
+					// that we don't immediately close it again in the next tick before we receive any notifications
+					lastNotificationTime = time.Now()
+				}
+			}
+		}
+	}()
 
 	// block here until the application is terminated
 	<-bt.done
@@ -303,6 +318,10 @@ func (bt *routebeat) SubscribeTerminals(query any, tag string, eventType EventTy
 		if err != nil {
 			return err
 		}
+
+		// update the last notification time to now since we just received a notification for this tag.
+		// This will be used to determine if we have received any notifications in the last 60 minutes
+		lastNotificationTime = time.Now()
 
 		data := SubscriptionTerminalsUpdated{}
 
