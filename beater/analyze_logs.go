@@ -254,7 +254,8 @@ func MatchSchedulerRouteLog(args *MatchLogArgs) (*analytics.Source, error) {
 		for _, log := range logs {
 			// if the scheduler log timestamp is after the reference log timestamp then break out of the loop for this key
 			// since the logs are returned in ascending order by timestamp and there won't be any more logs that match for this key.
-			if log.Device.Timestamp.After(args.reference) {
+			// adding 30 milliseconds to account for any slight clock skew between the scheduler logs and the reference log which could cause us to miss matching logs that are actually related.
+			if log.Device.Timestamp.After(args.reference.Add(30 * time.Millisecond)) {
 				break
 			}
 
