@@ -34,6 +34,7 @@ var (
 	busRoutingCache = cache.NewCacheMap[string, SlabMap](0)
 
 	lastNotificationTime time.Time
+	lastLogCacheCleanup  time.Time
 )
 
 // routebeat configuration.
@@ -192,8 +193,9 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		defer ticker.Stop()
 
 		// initialize the last notification time to now so that we don't
-		//  immediately close the subscription client on startup before we receive any notifications
+		// immediately close the subscription client on startup before we receive any notifications
 		lastNotificationTime = time.Now()
+		lastLogCacheCleanup = time.Now()
 
 		for {
 			select {
@@ -208,6 +210,14 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 					// reset the last notification time to now after closing the subscription client so
 					// that we don't immediately close it again in the next tick before we receive any notifications
 					lastNotificationTime = time.Now()
+				}
+
+				// cleanup the log cache after 120 minutes since the last cleanup to prevent memory bloat from old log entries that will never be matched to an event since we are past the time window for matching logs to events
+				if time.Since(lastLogCacheCleanup) > 120*time.Minute {
+					logCache.Cleanup()
+					// reset the last log cache cleanup time to now after cleaning up the log cache so
+					// that we don't immediately clean it up again in the next tick
+					lastLogCacheCleanup = time.Now()
 				}
 			}
 		}
