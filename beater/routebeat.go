@@ -34,7 +34,6 @@ var (
 	busRoutingCache = cache.NewCacheMap[string, SlabMap](0)
 
 	lastNotificationTime time.Time
-	lastLogCacheCleanup  time.Time
 )
 
 // routebeat configuration.
@@ -185,6 +184,27 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		go bt.SubscriptionClientRun()
 	}
 
+	// schedule a daily job to clear the bus routing cache to prevent memory bloat from old physical route
+	// information that may never be used again after a certain amount of time since physical route information
+	// is only useful for enriching events for a certain amount of time before it becomes stale and irrelevant for enriching new events
+	scheduler.NewJob(
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(1, 11, 11))), // schedule to run daily at 1:11:11am
+		gocron.NewTask(func() {
+			logp.Info("Daily Bus Routing cache clear, clearing bus routing cache to prevent memory bloat")
+			busRoutingCache.Clear()
+		}),
+	)
+
+	// schedule a periodic job to clean up the log cache by removing expired items to prevent memory bloat
+	// from old log entries that will never be matched to events since we are past the time window for matching logs to events
+	scheduler.NewJob(
+		gocron.DurationJob(60*time.Minute), // run every 60 minutes
+		gocron.NewTask(func() {
+			logp.Info("Periodic Log Cache cleanup, cleaning up log cache to prevent memory bloat")
+			logCache.Cleanup()
+		}),
+	)
+
 	// start a go routine to monitor the time since the last notification was received
 	// and close the subscription client if it has been more than 60 minutes since the
 	// last notification was received to resubscribe to the subscriptions and run the reconnect logic of the subscription client
@@ -195,7 +215,6 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		// initialize the last notification time to now so that we don't
 		// immediately close the subscription client on startup before we receive any notifications
 		lastNotificationTime = time.Now()
-		lastLogCacheCleanup = time.Now()
 
 		for {
 			select {
@@ -210,14 +229,6 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 					// reset the last notification time to now after closing the subscription client so
 					// that we don't immediately close it again in the next tick before we receive any notifications
 					lastNotificationTime = time.Now()
-				}
-
-				// cleanup the log cache after 120 minutes since the last cleanup to prevent memory bloat from old log entries that will never be matched to an event since we are past the time window for matching logs to events
-				if time.Since(lastLogCacheCleanup) > 120*time.Minute {
-					logCache.Cleanup()
-					// reset the last log cache cleanup time to now after cleaning up the log cache so
-					// that we don't immediately clean it up again in the next tick
-					lastLogCacheCleanup = time.Now()
 				}
 			}
 		}

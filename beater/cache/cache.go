@@ -28,6 +28,14 @@ func NewCacheMap[K comparable, V any](expiry time.Duration) *CacheMap[K, V] {
 	}
 }
 
+// Clear cache by reinitializing the Store
+func (c *CacheMap[K, V]) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.Store = make(map[K]cacheItem[V])
+}
+
 // Get retrieves a value from the cache and a boolean if found and not expired
 func (c *CacheMap[K, V]) Get(key K) (V, bool) {
 	c.mu.RLock()
