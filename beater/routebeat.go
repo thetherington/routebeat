@@ -395,6 +395,12 @@ func (bt *routebeat) ScanEvents(edges []Edge) {
 			)
 		}
 
+		// if we can't find a nameset value for the subscribed source, then we won't be able to match this physical route information
+		// to any subscribed sources in the route subscribe notifications, so we should skip adding this physical route information to the cache since it won't be useful for enriching any events.
+		if subName == "" {
+			continue
+		}
+
 		p := SlabPartial{
 			Id:     edge.Id,
 			Name:   edge.Name,
