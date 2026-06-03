@@ -372,18 +372,6 @@ func (bt *routebeat) ScanEvents(edges []Edge) {
 			subName    string
 		)
 
-		if edge.Port != nil {
-			deviceName = edge.Port.Device.Name
-
-			outputInt, err := ExtractOutputFromPort(edge.Port.Id)
-			if err != nil {
-				logp.Err("failed to extract output from port Id: %s, error: %v", edge.Port.Id, err)
-				continue
-			}
-
-			output = outputInt
-		}
-
 		// if there is a subscribed source, then find the nameset value for the subscribed source to use as the key
 		// in the bus routing cache. If there is no subscribed source, then we can't add this physical route information
 		// to the cache because we won't know which subscribed source it belongs to.
@@ -399,6 +387,18 @@ func (bt *routebeat) ScanEvents(edges []Edge) {
 		// to any subscribed sources in the route subscribe notifications, so we should skip adding this physical route information to the cache since it won't be useful for enriching any events.
 		if subName == "" {
 			continue
+		}
+
+		if edge.Port != nil {
+			deviceName = edge.Port.Device.Name
+
+			outputInt, err := ExtractOutputFromPort(edge.Port.Id)
+			if err != nil {
+				logp.Err("failed to extract output from port Id: %s, error: %v", edge.Port.Id, err)
+				continue
+			}
+
+			output = outputInt
 		}
 
 		p := SlabPartial{
