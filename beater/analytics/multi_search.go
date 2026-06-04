@@ -255,23 +255,9 @@ func createSchedulerLogsQuery(src, dst string) *types.Query {
 		},
 	})
 
-	mustBoolSlice = append(mustBoolSlice, types.Query{
-		MultiMatch: &types.MultiMatchQuery{
-			Query:   src,
-			Fields:  []string{"log.syslog.message"},
-			Type:    &textquerytype.Phrase,
-			Lenient: esapi.BoolPtr(true),
-		},
-	})
-
-	mustBoolSlice = append(mustBoolSlice, types.Query{
-		MultiMatch: &types.MultiMatchQuery{
-			Query:   dst,
-			Fields:  []string{"log.syslog.message"},
-			Type:    &textquerytype.Phrase,
-			Lenient: esapi.BoolPtr(true),
-		},
-	})
+	// Add queries for src and dst, handling the case where the first character of the UUID is a letter.
+	mustBoolSlice = append(mustBoolSlice, CreateSchedulerIdMatchQuery(src))
+	mustBoolSlice = append(mustBoolSlice, CreateSchedulerIdMatchQuery(dst))
 
 	return &types.Query{
 		Bool: &types.BoolQuery{
