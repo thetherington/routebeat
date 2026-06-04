@@ -14,7 +14,6 @@ import (
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/mapstr"
 	"github.com/go-co-op/gocron/v2"
-	"github.com/google/uuid"
 	"github.com/hasura/go-graphql-client"
 	"github.com/hasura/go-graphql-client/pkg/jsonutil"
 
@@ -548,13 +547,7 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 			gocron.OneTimeJobStartDateTime(time.Now().Add(bt.config.ES.Delay)),
 		),
 		gocron.NewTask(bt.ScheduledTaskLogsAnalyze, events),
-		gocron.WithEventListeners(
-			gocron.AfterJobRuns(func(jobID uuid.UUID, jobName string) {
-				if err := scheduler.RemoveJob(jobID); err != nil {
-					logp.Err("Failed to remove scheduler job #%s: %v", jobID, err)
-				}
-			}),
-		),
+		gocron.WithLimitedRuns(1),
 	)
 
 	logp.Debug("ProcessResults", "Scheduled %d events for Tag: %s with for: [%v], EventType: %s", len(events), tag, strings.Join(buscodes, ","), eventType)
