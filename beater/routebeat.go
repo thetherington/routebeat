@@ -14,6 +14,7 @@ import (
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/mapstr"
 	"github.com/go-co-op/gocron/v2"
+	"github.com/google/uuid"
 	"github.com/hasura/go-graphql-client"
 	"github.com/hasura/go-graphql-client/pkg/jsonutil"
 
@@ -122,15 +123,6 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		return err
 	}
 
-	// Disable GraphQL query client for now (only need subscriptions)
-	// create the graphql query client
-	// queryClient := graphql.NewClient(bt.config.API.Url, bt.httpClient)
-
-	// run the query client in a seperate go routine for each tag
-	// for _, tag := range bt.config.Tags {
-	// go bt.QueryTerminalsRoutine(queryClient, tag, bt.done)
-	// }
-
 	// create the subscription client whether it's needed or not
 	bt.subClient = graphql.
 		NewSubscriptionClient(getWssURL(bt.config.API.Url)).
@@ -188,7 +180,7 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	// information that may never be used again after a certain amount of time since physical route information
 	// is only useful for enriching events for a certain amount of time before it becomes stale and irrelevant for enriching new events
 	scheduler.NewJob(
-		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(1, 11, 11))), // schedule to run daily at 1:11:11am
+		gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(6, 15, 55))), // schedule to run daily at 6:15:55am UTC
 		gocron.NewTask(func() {
 			logp.Info("Daily Bus Routing cache clear, clearing bus routing cache to prevent memory bloat")
 			busRoutingCache.Clear()
@@ -280,47 +272,6 @@ func (bt *routebeat) SubscriptionClientRun() {
 		}
 
 		logp.Info("subscription client reconnect/re-run")
-	}
-}
-
-func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, done chan struct{}) {
-	// variables
-	variables := map[string]any{
-		"tag":   tag,
-		"limit": bt.config.API.Limit,
-	}
-
-	ticker := time.NewTicker(bt.config.Period)
-
-	for {
-		select {
-		case <-bt.done:
-			logp.Warn("exiting QueryTerminalsRoutine for Tag: %s", tag)
-			return
-		case <-ticker.C:
-		}
-
-		var query QueryTerminals
-
-		err := func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), CLIENT_TIMEOUT*time.Second)
-			defer cancel()
-
-			return client.Query(ctx, &query, variables)
-		}()
-		if err != nil {
-			logp.Err("error query failed for Tag: %s: %v", tag, err)
-			continue
-		}
-
-		// check if there has been results to process
-		if query.Terminals.TotalCount < 1 {
-			logp.Info("Query Results is 0 for Tag: %s", tag)
-			continue
-		}
-
-		// process results
-		bt.BuildEvents(tag, query.Terminals.Edges, Query)
 	}
 }
 
@@ -433,6 +384,22 @@ func (bt *routebeat) ScanEvents(edges []Edge) {
 		logp.Debug("ScanEvents", "ScanEvent for: %s (%s) Output: %d SubscribedSource: %s", edge.Name, deviceName, output, subName)
 	}
 }
+
+/*
+Route Subscribe Notification
+|
+|-- Scheduled Task to Analyze Logs
+	|
+	|-- AnalyzeLogCollection
+		|
+		|-- Query Magnum Logs
+		|
+		|-- Query Additional Logs
+		|
+		|-- Match Logs to Event
+			|
+			|-- If matched, enrich event with log data and publish
+*/
 
 // Builds beat events based on the Edge{} struct definition
 func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) {
@@ -570,49 +537,63 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 		processed++
 	}
 
-	// if there is an elasticsearch client and there are events to process
-	// then schedule a job to analyze the logs for these events and publish them after the configured delay
-	if db != nil && len(events) > 0 {
-		_, err := scheduler.NewJob(
-			gocron.OneTimeJob(
-				gocron.OneTimeJobStartDateTime(time.Now().Add(bt.config.ES.Delay)),
-			),
-			gocron.NewTask(
-				func() {
-					for i, event := range events {
-						// analyze the logs for this event and enrich the event with log data if there is a match
-						if err := bt.AnalyzeLogCollection(&event); err != nil {
-							HandleAnalyzeLogError(err, &event)
-						}
-
-						// enrich the event with physical route information from the cache if there is a destination label
-						// and physical route information in the cache for that destination label
-						if busname, err := ExtractStringFromEvent(&event, "destinationLabel"); err == nil {
-							if slabs, ok := busRoutingCache.Get(busname); ok {
-								destinations := make([]any, 0, len(slabs))
-								for _, s := range slabs {
-									destinations = append(destinations, s)
-								}
-
-								event.PutValue("slab_destinations", destinations)
-							}
-						}
-
-						events[i] = event
-					}
-
-					bt.client.PublishAll(events)
-				},
-			),
-		)
-		if err != nil {
-			logp.Err("Failed to create scheduler job for events #%d:%v", len(events), err)
-		}
-
-		logp.Debug("ProcessResults", "Scheduled %d events for Tag: %s with for: [%v], EventType: %s", len(events), tag, strings.Join(buscodes, ","), eventType)
+	// early return if no events were processed to avoid scheduling unnecessary jobs and log messages
+	if len(events) == 0 {
+		return
 	}
 
-	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, EventType: %s for: [%v]", tag, processed, discarded, eventType, strings.Join(buscodes, ","))
+	// schedule a job to analyze the logs for these events after the configured delay and then publish the enriched events to the output
+	scheduler.NewJob(
+		gocron.OneTimeJob(
+			gocron.OneTimeJobStartDateTime(time.Now().Add(bt.config.ES.Delay)),
+		),
+		gocron.NewTask(bt.ScheduledTaskLogsAnalyze, events),
+		gocron.WithEventListeners(
+			gocron.AfterJobRuns(func(jobID uuid.UUID, jobName string) {
+				if err := scheduler.RemoveJob(jobID); err != nil {
+					logp.Err("Failed to remove scheduler job #%s: %v", jobID, err)
+				}
+			}),
+		),
+	)
+
+	logp.Debug("ProcessResults", "Scheduled %d events for Tag: %s with for: [%v], EventType: %s", len(events), tag, strings.Join(buscodes, ","), eventType)
+}
+
+// ScheduledTaskLogsAnalyze is the function that is scheduled to run after the configured delay for each batch of events
+// that are built from the query results or subscriptions. This function will analyze the logs for each event and enrich
+// the event with log data if there is a match. After analyzing the logs for each event, it will publish the enriched events to the output.
+func (bt *routebeat) ScheduledTaskLogsAnalyze(events []beat.Event) {
+	for i, event := range events {
+		busname, err := ExtractStringFromEvent(&event, "destinationLabel")
+		if err != nil || busname == "" {
+			continue
+		}
+
+		// analyze the logs for this event and enrich the event with log data if there is a match
+		if err := bt.AnalyzeLogCollection(&event); err != nil {
+			HandleAnalyzeLogError(err, &event)
+		}
+
+		// enrich the event with physical route information from the cache if there is a destination label
+		// and physical route information in the cache for that destination label
+		if slabs, ok := busRoutingCache.Get(busname); ok {
+			destinations := make([]any, 0, len(slabs))
+			for _, s := range slabs {
+				destinations = append(destinations, s)
+			}
+
+			event.PutValue("slab_destinations", destinations)
+		}
+
+		events[i] = event
+	}
+
+	bt.client.PublishAll(events)
+
+	// set events to nil to allow the garbage collector to free up the memory used by the events
+	// since we have already published them and we don't need to keep them in memory anymore
+	events = nil
 }
 
 func (bt *routebeat) AnalyzeLogCollection(event *beat.Event) error {

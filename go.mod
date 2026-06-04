@@ -34,6 +34,7 @@ require (
 	github.com/elastic/elastic-agent-libs v0.19.6
 	github.com/elastic/go-elasticsearch/v8 v8.17.0
 	github.com/go-co-op/gocron/v2 v2.20.0
+	github.com/google/uuid v1.6.0
 	github.com/hasura/go-graphql-client v0.14.3
 	github.com/magefile/mage v1.15.0
 	github.com/mitchellh/gox v1.0.1
@@ -125,7 +126,6 @@ require (
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/google/pprof v0.0.0-20240727154555-813a5fbdbec8 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.0 // indirect
 	github.com/h2non/filetype v1.1.1 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect

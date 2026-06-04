@@ -166,6 +166,10 @@ func QueryLogsFromEvent(ctx context.Context, event *beat.Event) (analytics.Multi
 	// execute the multi-search query to collect the logs for each slab in the physical route as well as the scheduler logs for the overall route. If there are no results found for any of the queries, then return an error since we won't have any logs to analyze for this event.
 	logMap, err := db.SearchMultiLogs(ctx, queryOptions...)
 	if err != nil {
+		if err == analytics.ErrNoResults {
+			return nil, ErrNoLogsFound
+		}
+
 		return nil, fmt.Errorf("db.SearchMultiLogs error: %s", err.Error())
 	}
 
