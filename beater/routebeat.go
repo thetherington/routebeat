@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -284,7 +285,7 @@ func (bt *routebeat) Stop() {
 func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, done chan struct{}) {
 	// variables
 	variables := map[string]any{
-		"tag":   tag,
+		"tag":   strconv.Quote(tag),
 		"limit": bt.config.API.Limit,
 	}
 
@@ -325,7 +326,7 @@ func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, d
 func (bt *routebeat) SubscribeTerminals(query any, tag string) (string, error) {
 	// variables
 	v := map[string]any{
-		"tag": tag,
+		"tag": strconv.Quote(tag),
 	}
 
 	// subscribe to a query and run a callback function to process the messages
