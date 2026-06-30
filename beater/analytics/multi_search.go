@@ -16,7 +16,7 @@ import (
 
 const (
 	SlabLogsIndex      = "log-syslog-informational-*"
-	SchedulerLogsIndex = "log-syslog-debug-*"
+	SchedulerLogsIndex = "log-syslog-informational-*"
 )
 
 // MultiLogQuery is the sealed interface for variadic multi-search query configs.
@@ -239,7 +239,7 @@ func createSchedulerLogsQuery(src, dst string) *types.Query {
 
 	mustBoolSlice = append(mustBoolSlice, types.Query{
 		MultiMatch: &types.MultiMatchQuery{
-			Query:   "dcpipes.jsonrpctcp: SENDING",
+			Query:   "main: SENDING",
 			Fields:  []string{"log.syslog.message"},
 			Type:    &textquerytype.Phrase,
 			Lenient: esapi.BoolPtr(true),
@@ -255,9 +255,23 @@ func createSchedulerLogsQuery(src, dst string) *types.Query {
 		},
 	})
 
-	// Add queries for src and dst, handling the case where the first character of the UUID is a letter.
-	mustBoolSlice = append(mustBoolSlice, CreateSchedulerIdMatchQuery(src))
-	mustBoolSlice = append(mustBoolSlice, CreateSchedulerIdMatchQuery(dst))
+	mustBoolSlice = append(mustBoolSlice, types.Query{
+		MultiMatch: &types.MultiMatchQuery{
+			Query:   src,
+			Fields:  []string{"log.syslog.message"},
+			Type:    &textquerytype.Phrase,
+			Lenient: esapi.BoolPtr(true),
+		},
+	})
+
+	mustBoolSlice = append(mustBoolSlice, types.Query{
+		MultiMatch: &types.MultiMatchQuery{
+			Query:   dst,
+			Fields:  []string{"log.syslog.message"},
+			Type:    &textquerytype.Phrase,
+			Lenient: esapi.BoolPtr(true),
+		},
+	})
 
 	return &types.Query{
 		Bool: &types.BoolQuery{
