@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/thetherington/routebeat/beater/httpclient"
 )
@@ -71,7 +72,7 @@ func WithManualConfig(cfg *NotifyAppCfg) NotifierAppOption {
 			n.urls = append(n.urls, fmt.Sprintf("%s://%s:%d/%s", PROTO, node.Node, node.Port, API))
 		}
 
-		c, err := httpclient.NewHTTPClient()
+		c, err := httpclient.NewHTTPClient(httpclient.WithTimeout(10 * time.Second))
 		if err != nil {
 			return err
 		}
@@ -87,13 +88,15 @@ func WithAutoDiscover(cfg *AutoDiscoveryCfg) NotifierAppOption {
 		n.Origin = cfg.Origin
 		n.urls = []string{}
 
-		client, err := httpclient.NewHTTPClient(httpclient.WithAnalyticsAuth(
-			&httpclient.AnalyticsAuthCredentials{
-				Username: cfg.Username,
-				Password: cfg.Password,
-				IP:       cfg.Host,
-			},
-		))
+		client, err := httpclient.NewHTTPClient(
+			httpclient.WithTimeout(10*time.Second),
+			httpclient.WithAnalyticsAuth(
+				&httpclient.AnalyticsAuthCredentials{
+					Username: cfg.Username,
+					Password: cfg.Password,
+					IP:       cfg.Host,
+				},
+			))
 		if err != nil {
 			return fmt.Errorf("failed to create http client for analytics auth: %w", err)
 		}

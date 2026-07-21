@@ -12,10 +12,12 @@ routebeat:
     url: "https://129.153.131.121/graphql/v1.1"
     notifications: true
     limit: 2000
+    serialize_queries: false
     auth:
       client_id: "insite-poller"
       client_secret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd"
       token_url: "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token"
+    timeout: 10s
   elasticsearch:
     address: "http://127.0.0.1:9200"
     index: "log-magnum-scheduler-*"    

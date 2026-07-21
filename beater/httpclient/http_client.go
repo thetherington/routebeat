@@ -15,6 +15,8 @@ import (
 	"golang.org/x/oauth2/clientcredentials"
 )
 
+const MagnumAuthTimeout = 10 * time.Second
+
 type MagnumAuthCredentials struct {
 	ClientID     string
 	ClientSecret string
@@ -44,7 +46,7 @@ func NewHTTPClient(opts ...HTTPClientOption) (*http.Client, error) {
 
 	c := &http.Client{
 		Jar:     jar,
-		Timeout: 10 * time.Second,
+		Timeout: 60 * time.Second, // default timeout, can be overridden by WithTimeout option
 	}
 
 	for _, opt := range opts {
@@ -69,6 +71,13 @@ func WithMagnumAuth(creds *MagnumAuthCredentials) HTTPClientOption {
 func WithAnalyticsAuth(creds *AnalyticsAuthCredentials) HTTPClientOption {
 	return func(c *http.Client) error {
 		return AuthenticateAnalytics(c, creds)
+	}
+}
+
+func WithTimeout(timeout time.Duration) HTTPClientOption {
+	return func(c *http.Client) error {
+		c.Timeout = timeout
+		return nil
 	}
 }
 
@@ -152,7 +161,10 @@ func getNewToken(id, secret, url string) (string, error) {
 		TokenURL:     url,
 	}
 
-	tokenSource := config.TokenSource(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), MagnumAuthTimeout)
+	defer cancel()
+
+	tokenSource := config.TokenSource(ctx)
 
 	token, err := tokenSource.Token()
 	if err != nil {

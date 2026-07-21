@@ -44,6 +44,7 @@ type Details struct {
 	Source    string `json:"source"`
 	Busname   string `json:"busname"`
 	Start     string `json:"start"`
+	Tags      string `json:"tags"`
 }
 
 type Basic struct {

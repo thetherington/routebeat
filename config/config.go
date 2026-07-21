@@ -12,10 +12,12 @@ type MagnumOIDCAuth struct {
 }
 
 type MagnumAPI struct {
-	Url           string         `config:"url"`
-	Limit         int            `config:"limit"`
-	Notifications bool           `config:"notifications"`
-	Auth          MagnumOIDCAuth `config:"auth"`
+	Url              string         `config:"url"`
+	Limit            int            `config:"limit"`
+	Notifications    bool           `config:"notifications"`
+	SerializeQueries bool           `config:"serialize_queries"`
+	Auth             MagnumOIDCAuth `config:"auth"`
+	Timeout          time.Duration  `config:"timeout"`
 }
 
 type Mapping struct {
@@ -68,14 +70,16 @@ var DefaultConfig = Config{
 	Period: 10 * time.Second,
 	Tags:   []string{},
 	API: MagnumAPI{
-		Url:           "https://129.153.131.121/graphql/v1.1",
-		Limit:         2000,
-		Notifications: true,
+		Url:              "https://129.153.131.121/graphql/v1.1",
+		Limit:            2000,
+		Notifications:    true,
+		SerializeQueries: false,
 		Auth: MagnumOIDCAuth{
 			ClientID:     "insite-poller",
 			ClientSecret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd",
 			TokenURL:     "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token",
 		},
+		Timeout: 10 * time.Second,
 	},
 	ES: Elasticsearch{
 		Address: "http://127.0.0.1:9200",

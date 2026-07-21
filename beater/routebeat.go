@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
@@ -25,7 +26,6 @@ import (
 )
 
 const (
-	CLIENT_TIMEOUT    = 10 // time in seconds
 	ANALYTICS_TIMEOUT = 10
 	BUSCACHE_FILE     = "busCache.gob"
 	SCHEDCACHE_FILE   = "scheduleCache.gob"
@@ -50,6 +50,7 @@ type routebeat struct {
 	httpClient *http.Client
 	subClient  *graphql.SubscriptionClient
 	subIds     []string
+	queryMu    sync.Mutex
 }
 
 // New creates an instance of routebeat.
@@ -302,7 +303,13 @@ func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, d
 		var query QueryTerminals
 
 		err := func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), CLIENT_TIMEOUT*time.Second)
+			// If enabled, serialize query requests across all tags to avoid overloading GraphQL.
+			if bt.config.API.SerializeQueries {
+				bt.queryMu.Lock()
+				defer bt.queryMu.Unlock()
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), bt.config.API.Timeout)
 			defer cancel()
 
 			return client.Query(ctx, &query, variables)
@@ -648,7 +655,7 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	case slices.Contains(srcTags, bt.config.Zorro):
 		currentState = Zorro
 
-	case srcLabel == bt.config.TDA:
+	case slices.Contains(srcTags, bt.config.TDA):
 		currentState = TDA
 
 	default:
@@ -734,6 +741,7 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 					Start:     value.GetTransitionTimeStr(),
 					End:       "",
 					EventType: eventType.String(),
+					Tags:      strings.Join(edge.Tags, ","),
 					Trigger:   "GraphQL Subscription (Current State)",
 				}).
 				WithTags("current").

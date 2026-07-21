@@ -31,12 +31,18 @@ routebeat:
 
     # Limit the number of destinations in the API query results
     limit: 2000
+
+    # Serialize GraphQL polling queries across tags to reduce API load
+    serialize_queries: false
     
     # Magnum OIDC Authentication
     auth:
       client_id: "insite-poller"
       client_secret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd"
       token_url: "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token"
+
+    # Defines how long to wait for the API to respond before timing out
+    timeout: 10s
 
   elasticsearch:
     # Elasticsearch server node url
