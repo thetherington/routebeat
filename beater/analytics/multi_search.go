@@ -186,8 +186,8 @@ func createSlabLogsQuery(slab, multicast string, output int) *types.Query {
 	mustBoolSlice = append(mustBoolSlice, types.Query{
 		Range: map[string]types.RangeQuery{
 			"@timestamp": types.DateRangeQuery{
-				From: StringPtr(FROM),
-				To:   StringPtr("now"),
+				Gte: StringPtr(FROM),
+				Lte: StringPtr("now"),
 			},
 		},
 	})
@@ -231,8 +231,8 @@ func createSchedulerLogsQuery(src, dst string) *types.Query {
 	mustBoolSlice = append(mustBoolSlice, types.Query{
 		Range: map[string]types.RangeQuery{
 			"@timestamp": types.DateRangeQuery{
-				From: StringPtr(FROM),
-				To:   StringPtr("now"),
+				Gte: StringPtr(FROM),
+				Lte: StringPtr("now"),
 			},
 		},
 	})

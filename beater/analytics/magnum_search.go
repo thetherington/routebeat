@@ -66,8 +66,8 @@ func createMagnumLogsQuery(source string, destination string) *types.Query {
 	mustBoolSlice = append(mustBoolSlice, types.Query{
 		Range: map[string]types.RangeQuery{
 			"@timestamp": types.DateRangeQuery{
-				From: StringPtr(FROM),
-				To:   StringPtr("now"),
+				Gte: StringPtr(FROM),
+				Lte: StringPtr("now"),
 			},
 		},
 	})
