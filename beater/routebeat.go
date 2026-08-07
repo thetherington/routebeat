@@ -35,7 +35,7 @@ const (
 var (
 	db            insite.SearchInterface
 	notifier      notify.NotiferInterface
-	scheduleCache = cache.NewCacheMap[string, *insite.BusRouting]()
+	scheduleCache = cache.NewCacheMap[string, []*insite.BusRouting]()
 	countersCache = cache.NewCacheMap[string, *Counters]()
 	busCache      = cache.NewCacheMap[string, *BusState]()
 
@@ -524,6 +524,7 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 
 		dstLabel     string       // broadview destination label
 		srcLabel     string       // broadview source label
+		prevSrcLabel string       // broadview previous source label
 		prevState    RoutingState // placeholder to store the previous routing state (default Unknown)
 		currentState RoutingState // placeholder to store the current routing state (default Unknown)
 
@@ -627,19 +628,34 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 
 	// get the busrouting information from the schedule cache
 	// return the event as-isif the cache doesn't have a key
-	routing, ok := scheduleCache.Get(dstLabel)
+	routings, ok := scheduleCache.Get(dstLabel)
 	if !ok {
 		event.PutValue("schedule.matched", false)
 		return &EventResults{event: &event, notifications: notifications}, ErrScheduleBusNotFound
 	}
 
-	// validate if the current time is after the end time in the routing (default to true)
-	// return event as-is if the cache end-date is less then the current time
-	if bt.config.ES.Dev.ValidateEndDate && routing.EndDate != nil {
-		if time.Now().After(*routing.EndDate) {
-			event.PutValue("schedule.matched", false)
-			return &EventResults{event: &event, notifications: notifications}, ErrScheduleBusExpired
+	var routing *insite.BusRouting
+
+	// select the routing based if where now is between the routing.StartDate and routing.EndDate
+	for _, r := range routings {
+		if r == nil {
+			continue
 		}
+
+		// if we are not validating end dates
+		if !bt.config.ES.Dev.ValidateEndDate {
+			routing = r
+			break
+		}
+
+		if time.Now().After(*r.StartDate) && (r.EndDate == nil || time.Now().Before(*r.EndDate)) {
+			routing = r
+			break
+		}
+	}
+	if routing == nil {
+		event.PutValue("schedule.matched", false)
+		return &EventResults{event: &event, notifications: notifications}, ErrScheduleBusNotFound
 	}
 
 	logp.Debug("ScheduleCache", "Destination:%s Source:%s %+v", dstLabel, srcLabel, routing)
@@ -674,18 +690,18 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	// increment counter for the routing state
 	counters.Increment(currentState)
 
-	// update the busState cache if the bus code doesn't exist
-	// otherwise swap the current state and save the previous state
-	busCache.Do(func(c *cache.CacheMap[string, *BusState]) {
-		if v, ok := c.Store[dstLabel]; ok {
-			prevState = v.SwapState(currentState)
-			return
-		}
-
-		c.Store[dstLabel] = NewBusState(currentState)
-	})
+	// get the stored state from the busCache (don't update yet)
+	if busState, ok := busCache.Get(dstLabel); ok {
+		prevState = busState.State
+		prevSrcLabel = busState.Source
+	} else {
+		// if the bus code doesn't exist in the cache, create a new BusState with the current state
+		busCache.Set(dstLabel, NewBusState(currentState, srcLabel))
+	}
 
 	// check if there's a there's a transition
+	// create notifications for the state change, decrement the counters based on the prevState, and add the deviationStartTime field to the transition time
+	// update the state in the busCache with the current state and updated source label.  This is done in the mutex lock to avoid
 	if (eventType == Notification) && (prevState != currentState) {
 		// perform this in a mutex lock - for concurrency reasons
 		busCache.DoMut(dstLabel, func(value *BusState) {
@@ -719,7 +735,7 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 					AddDetails(msgType, notify.Details{
 						Status:    prevState.String(),
 						Busname:   dstLabel,
-						Source:    srcLabel,
+						Source:    prevSrcLabel,
 						Start:     prevTime,
 						End:       value.GetTransitionTimeStr(),
 						EventType: eventType.String(),
@@ -763,30 +779,43 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 				event.PutValue("schedule.deviationEndTime", value.ResetTransition())
 			}
 
+			// update the busState cache with the current state and updated source label.
+			// This is done in the mutex lock to avoid race conditions
+			value.SwapState(currentState)
+			value.Source = srcLabel
 		}) // end busCache.DoMut()
 	}
 
+	// if the event is a notification then update the source label and add the deviationStartTime field to the transition time
 	if (eventType == Notification) && (prevState == currentState) {
 		busCache.DoMut(dstLabel, func(value *BusState) {
-			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr())
+			value.Source = srcLabel
+
+			// encase the state is primary and the transition time is nil, then use a hypen "-" to indicate no transition time.
+			// Otherwise, get the transition time as a string
+			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr(FlagOnlyTransition))
 		})
 	}
 
-	// for queries get the transition start time or "-" incase the notification already processed state change
-	// also heal the transition state if in a defunct state
+	// if the event is query then check if the state and manage it if it's in a defunct state.
 	if eventType == Query {
 		busCache.DoMut(dstLabel, func(value *BusState) {
-			// update the transition time if the state has changed
-			// this covers the scenario where a notification hasn't been sent
-			// but the query has detected a state change
-			if prevState != currentState {
-				value.SetTransitionTime(time.Now())
-			}
+			// recover the transition if in a defunct state.
+			// must call CorrectDefunctTransition() 3x to allow time for a notification to properly update the state
+			// this helps with top of the hour where a query may be processed before a notification
+			// After 3x calls:
+			// 1: if the state is Primary, then reset it calls ResetTransition() to clear the transition time
+			// 2: if the state is not Primary, then it will set the transition time to now
+			// 3: update the state and the srclabel to the current state and source label
+			if currentState != prevState {
+				logp.Warn("Busname: %s has a defunct transition previous: %s, current: %s", dstLabel, prevState, currentState)
 
-			// recover the transition if in a defunct state. must call this 3x times to self heal
-			if value.IsDefunctTransition() {
-				logp.Warn("Busname: %s has a defunct transition", dstLabel)
-				value.CorrectDefunctTransition()
+				if reset := value.CorrectDefunctTransition(currentState); reset {
+					value.SwapState(currentState)
+					value.Source = srcLabel
+
+					logp.Warn("Busname: %s has been corrected to current state: %s", dstLabel, currentState)
+				}
 			}
 
 			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr(FlagOnlyTransition))

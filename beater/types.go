@@ -107,14 +107,15 @@ func (s *Counters) Decrement(field RoutingState) {
 
 type BusState struct {
 	State           RoutingState
+	Source          string
 	Transition      *time.Time
 	TransitionStart *time.Time
 	Restore         *time.Time
 	Counter         int
 }
 
-func NewBusState(state RoutingState) *BusState {
-	return &BusState{State: state}
+func NewBusState(state RoutingState, source string) *BusState {
+	return &BusState{State: state, Source: source}
 }
 
 // SwapState replaces the State and returns the old state
@@ -206,17 +207,24 @@ func (bs *BusState) ResetTransition() string {
 	return t.Format(time.RFC3339)
 }
 
-// checks whether the transition is in a defunct state if the state is Primary and the transition time is set
-func (bs *BusState) IsDefunctTransition() bool {
-	return bs.State == Primary && bs.Transition != nil
+// checks whether the transition is in a defunct state if the new state is Primary and the stored state is not Primary,
+// then the transition is defunct.  This is used to self heal the transition state
+func (bs *BusState) IsDefunctTransition(newState RoutingState) bool {
+	return newState != bs.State
 }
 
 // call this 3x times to heal the transition defunct state
-func (bs *BusState) CorrectDefunctTransition() {
+func (bs *BusState) CorrectDefunctTransition(state RoutingState) bool {
 	if bs.Counter > 2 {
-		bs.ResetTransition()
-		return
+		if state == Primary {
+			bs.ResetTransition()
+		} else {
+			bs.SetTransitionTime(time.Now())
+		}
+
+		return true
 	}
 
 	bs.Counter++
+	return false
 }

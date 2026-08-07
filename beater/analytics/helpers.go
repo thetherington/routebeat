@@ -155,7 +155,7 @@ func processBucketsIntoBusMap(buckets []types.StringTermsBucket) BusRouteMap {
 	return busMap
 }
 
-func createQuery() *types.Query {
+func createQuery(relative_time string) *types.Query {
 	mustBoolSlice := make([]types.Query, 0)
 
 	// filter for events in the last hour
@@ -186,7 +186,7 @@ func createQuery() *types.Query {
 	mustBoolSlice = append(mustBoolSlice, types.Query{
 		Range: map[string]types.RangeQuery{
 			"scheduler.event.end_date": types.DateRangeQuery{
-				Gte: StringPtr("now"),
+				Gte: StringPtr(relative_time),
 			},
 		},
 	})
@@ -194,7 +194,7 @@ func createQuery() *types.Query {
 	mustBoolSlice = append(mustBoolSlice, types.Query{
 		Range: map[string]types.RangeQuery{
 			"scheduler.event.start_date": types.DateRangeQuery{
-				Lte: StringPtr("now"),
+				Lte: StringPtr(relative_time),
 			},
 		},
 	})

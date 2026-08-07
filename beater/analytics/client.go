@@ -14,7 +14,8 @@ import (
 type BusRouteMap = map[string]*BusRouting
 
 type SearchInterface interface {
-	QuerySchedulerEventParams(context.Context) (BusRouteMap, error)
+	// QuerySchedulerEventParams queries the Elasticsearch index for bus routing information based on the provided relative time.
+	QuerySchedulerEventParams(ctx context.Context, opt ...string) (BusRouteMap, error)
 }
 
 type ESSearch struct {
@@ -48,7 +49,7 @@ func NewClient(cfg *ClientConfig) (SearchInterface, error) {
 	req := search.NewRequest()
 
 	// bool query
-	req.Query = createQuery()
+	req.Query = createQuery("now")
 
 	// Root: Terms, Sub: Top Metrics aggregations
 	req.Aggregations = createAggregations()
@@ -63,7 +64,16 @@ func NewClient(cfg *ClientConfig) (SearchInterface, error) {
 	}, nil
 }
 
-func (es *ESSearch) QuerySchedulerEventParams(ctx context.Context) (BusRouteMap, error) {
+// QuerySchedulerEventParams queries the Elasticsearch index for bus routing information based on the provided relative time.
+func (es *ESSearch) QuerySchedulerEventParams(ctx context.Context, opt ...string) (BusRouteMap, error) {
+	relative_time := "now"
+	if len(opt) > 0 {
+		relative_time = opt[0]
+	}
+
+	// update query with relative time
+	es.request.Query = createQuery(relative_time)
+
 	// send query
 	resp, err := es.client.Search().Index(es.index).Request(es.request).Do(ctx)
 	if err != nil {

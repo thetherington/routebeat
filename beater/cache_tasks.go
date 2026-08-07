@@ -8,22 +8,47 @@ import (
 	insite "github.com/thetherington/routebeat/beater/analytics"
 )
 
+func querySchedule(logLabel string, opt ...string) insite.BusRouteMap {
+	ctx, cancel := context.WithTimeout(context.Background(), ANALYTICS_TIMEOUT*time.Second)
+	defer cancel()
+
+	bm, err := db.QuerySchedulerEventParams(ctx, opt...)
+	if err != nil || len(bm) == 0 {
+		logp.Err("failed %s: %v", logLabel, err)
+	}
+
+	return bm
+}
+
+func mergeBusRouteMaps(now, ahead insite.BusRouteMap) map[string][]*insite.BusRouting {
+	merged := make(map[string][]*insite.BusRouting, len(now)+len(ahead))
+
+	for key, route := range now {
+		merged[key] = []*insite.BusRouting{route}
+	}
+
+	for key, route := range ahead {
+		if routes, ok := merged[key]; ok {
+			merged[key] = append(routes, route)
+			continue
+		}
+
+		// if the key doesn't exist in the merged map, create a new slice with the route
+		merged[key] = []*insite.BusRouting{nil, route}
+	}
+
+	return merged
+}
+
 // run in the background to query the analytics schedule index and update the scheduleCache
 func AnalyticsQueryGoRoutine(period time.Duration, done <-chan struct{}) {
 	ticker := time.NewTicker(period)
 
 	for {
-		bm, err := func() (insite.BusRouteMap, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), ANALYTICS_TIMEOUT*time.Second)
-			defer cancel()
+		bm_now := querySchedule("QueryScheduler()")
+		bm_ahead := querySchedule("QueryScheduler(now+25m)", "now+25m")
 
-			return db.QuerySchedulerEventParams(ctx)
-		}()
-		if err != nil || len(bm) == 0 {
-			logp.Err("failed QueryScheduler(): %v", err)
-		}
-
-		scheduleCache.Load(bm)
+		scheduleCache.Load(mergeBusRouteMaps(bm_now, bm_ahead))
 
 		logp.Debug("QueryScheduler", "cache updated with %d keys", scheduleCache.Length())
 
