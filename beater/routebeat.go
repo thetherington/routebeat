@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -280,7 +281,7 @@ func (bt *routebeat) SubscriptionClientRun() {
 func (bt *routebeat) SubscribeTerminals(query any, tag string, eventType EventType) (string, error) {
 	// variables
 	v := map[string]any{
-		"tag":   tag,
+		"tag":   strconv.Quote(tag),
 		"isSub": (eventType == Notification), // if event type is Notification then isSub should be true, otherwise false
 	}
 

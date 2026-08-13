@@ -1,11 +1,11 @@
 package beater
 
 type QueryTerminals struct {
-	Terminals Terminals `graphql:"terminals(input: {filters: [{id: \"isDst\", booleanValue: true}, {id:\"isSub\", booleanValue: true}, {id: \"tags\", value: $tag}]})"`
+	Terminals Terminals `graphql:"terminals(input: {filters: [{id: \"isDst\", booleanValue: true}, {id:\"isSub\", booleanValue: true}, {id: \"tags\", listIncludes: [$tag]}]})"`
 }
 
 type SubscriptionTerminalsUpdated struct {
-	TerminalsUpdated []Edge `graphql:"terminalsUpdated(input: {filters: [{id: \"isDst\", booleanValue: true}, {id:\"isSub\", booleanValue: $isSub}, {id: \"tags\", value: $tag}]})"`
+	TerminalsUpdated []Edge `graphql:"terminalsUpdated(input: {filters: [{id: \"isDst\", booleanValue: true}, {id:\"isSub\", booleanValue: $isSub}, {id: \"tags\", listIncludes: [$tag]}]})"`
 }
 
 type Terminals struct {
