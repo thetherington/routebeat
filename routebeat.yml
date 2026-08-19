@@ -43,10 +43,13 @@ routebeat:
 
     dev:
       # Whether to use the log ingest timestamp instead of the log event timestamp for matching with route notifications. This can help with log timestamp issues in magnum.
-      use_log_ingest_timestamp: true
+      # use_log_ingest_timestamp: true
 
       # Whether to swap the timezone of slab logs from EST/EDT to UTC to match the scheduler logs timezone. This can help with log timestamp issues in magnum.
       # swap_slab_log_timezone: true
+
+      # Whether to match the magClientSrv logs for this event by comparing the timestamps of the magClientSrv logs to the timestamp of the route request log and ensuring that they are within the configured time window and not in the cache.
+      # magclientsrv_logs: true
 
   # Magnum API
   api:
@@ -125,13 +128,13 @@ setup.kibana:
 # Configure what output to use when sending the data collected by the beat.
 
 # ---------------------------- Elasticsearch Output ----------------------------
-output.elasticsearch:
+#output.elasticsearch:
   # Array of hosts to connect to.
-  hosts: ["10.9.0.69:9200"]
+  #hosts: ["10.9.0.69:9200"]
 
   # Performance preset - one of "balanced", "throughput", "scale",
   # "latency", or "custom".
-  preset: balanced
+  #preset: balanced
 
   # Protocol - either `http` (default) or `https`.
   #protocol: "https"
@@ -142,9 +145,9 @@ output.elasticsearch:
   #password: "changeme"
 
 # ------------------------------ Logstash Output -------------------------------
-#output.logstash:
+output.logstash:
   # The Logstash hosts
-  #hosts: ["localhost:5044"]
+  hosts: ["10.9.0.69:5057"]
 
   # Optional SSL. By default is off.
   # List of root certificates for HTTPS server verifications

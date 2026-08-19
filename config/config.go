@@ -36,6 +36,7 @@ type Elasticsearch struct {
 type DevFlags struct {
 	UseLogIngestTimestamp bool `config:"use_log_ingest_timestamp"`
 	SwapSlabLogTimezone   bool `config:"swap_slab_log_timezone"`
+	MagClientSrvLogs      bool `config:"magclientsrv_logs"`
 }
 
 type Config struct {

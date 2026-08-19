@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	SlabLogsIndex      = "log-syslog-informational-*"
-	SchedulerLogsIndex = "log-syslog-informational-*"
+	SlabLogsIndex            = "log-syslog-informational-*"
+	SchedulerLogsIndex       = "log-syslog-informational-*"
+	SchedulerBackupLogsIndex = "log-syslog-debug-*"
+	MagnumClientSrvLogsIndex = "log-syslog-informational-*"
 )
 
 // MultiLogQuery is the sealed interface for variadic multi-search query configs.
@@ -48,13 +50,13 @@ func (c *SlabLogConfig) buildQuery() *types.Query {
 }
 
 // SchedulerLogConfig is the configuration builder for scheduler log queries.
-// Index pattern: log-syslog-debug-*
+// Index pattern: log-syslog-informational-*
 type SchedulerLogConfig struct {
 	Src string
 	Dst string
 }
 
-// NewSchedulerLogQuery returns a MultiLogQuery that searches the scheduler debug log index.
+// NewSchedulerLogQuery returns a MultiLogQuery that searches the scheduler informational log index.
 func NewSchedulerLogQuery(src, dst string) MultiLogQuery {
 	return &SchedulerLogConfig{Src: src, Dst: dst}
 }
@@ -63,6 +65,42 @@ func (c *SchedulerLogConfig) Key() string          { return "scheduler:" + c.Src
 func (c *SchedulerLogConfig) indexPattern() string { return SchedulerLogsIndex }
 func (c *SchedulerLogConfig) buildQuery() *types.Query {
 	return createSchedulerLogsQuery(c.Src, c.Dst)
+}
+
+// SchedulerBackupLogConfig is the configuration builder for scheduler backup log queries.
+// Index pattern: log-syslog-debug-*
+type SchedulerBackupLogConfig struct {
+	Src string
+	Dst string
+}
+
+// NewSchedulerBackupLogQuery returns a MultiLogQuery that searches the scheduler backup debug log index.
+func NewSchedulerBackupLogQuery(src, dst string) MultiLogQuery {
+	return &SchedulerBackupLogConfig{Src: src, Dst: dst}
+}
+
+func (c *SchedulerBackupLogConfig) Key() string          { return "scheduler:backup:" + c.Src + "->" + c.Dst }
+func (c *SchedulerBackupLogConfig) indexPattern() string { return SchedulerBackupLogsIndex }
+func (c *SchedulerBackupLogConfig) buildQuery() *types.Query {
+	return createSchedulerBackupLogsQuery(c.Src, c.Dst)
+}
+
+// MagnumClientSrvLogConfig is the configuration builder for magnum client server log queries.
+// Index pattern: log-syslog-informational-*
+type MagnumClientSrvLogConfig struct {
+	Src string
+	Dst string
+}
+
+// NewMagnumClientSrvLogQuery returns a MultiLogQuery that searches the magnum client server informational log index.
+func NewMagnumClientSrvLogQuery(src, dst string) MultiLogQuery {
+	return &MagnumClientSrvLogConfig{Src: src, Dst: dst}
+}
+
+func (c *MagnumClientSrvLogConfig) Key() string          { return "magnum_client_srv:" + c.Src + "->" + c.Dst }
+func (c *MagnumClientSrvLogConfig) indexPattern() string { return MagnumClientSrvLogsIndex }
+func (c *MagnumClientSrvLogConfig) buildQuery() *types.Query {
+	return createMagnumClientSrvLogsQuery(c.Src, c.Dst)
 }
 
 // SearchMultiLogs performs a single multi-search (msearch) request containing one
@@ -272,6 +310,102 @@ func createSchedulerLogsQuery(src, dst string) *types.Query {
 			Lenient: esapi.BoolPtr(true),
 		},
 	})
+
+	return &types.Query{
+		Bool: &types.BoolQuery{
+			Must: mustBoolSlice,
+		},
+	}
+}
+
+func createMagnumClientSrvLogsQuery(src, dst string) *types.Query {
+	mustBoolSlice := make([]types.Query, 0)
+
+	// filter for events in the 30 minute window
+	mustBoolSlice = append(mustBoolSlice, types.Query{
+		Range: map[string]types.RangeQuery{
+			"@timestamp": types.DateRangeQuery{
+				Gte: StringPtr(FROM),
+				Lte: StringPtr("now"),
+			},
+		},
+	})
+
+	// filter for the magrtrsrv process
+	mustBoolSlice = append(mustBoolSlice, types.Query{
+		MatchPhrase: map[string]types.MatchPhraseQuery{
+			"process.name": {Query: "magclientsrv"},
+		},
+	})
+
+	mustBoolSlice = append(mustBoolSlice, types.Query{
+		MultiMatch: &types.MultiMatchQuery{
+			Query:   "INFO:interfaces.server:Received Dispatch Request.",
+			Fields:  []string{"log.syslog.message"},
+			Type:    &textquerytype.Phrase,
+			Lenient: esapi.BoolPtr(true),
+		},
+	})
+
+	mustBoolSlice = append(mustBoolSlice, types.Query{
+		MultiMatch: &types.MultiMatchQuery{
+			Query:   src,
+			Fields:  []string{"log.syslog.message"},
+			Type:    &textquerytype.Phrase,
+			Lenient: esapi.BoolPtr(true),
+		},
+	})
+
+	mustBoolSlice = append(mustBoolSlice, types.Query{
+		MultiMatch: &types.MultiMatchQuery{
+			Query:   dst,
+			Fields:  []string{"log.syslog.message"},
+			Type:    &textquerytype.Phrase,
+			Lenient: esapi.BoolPtr(true),
+		},
+	})
+
+	return &types.Query{
+		Bool: &types.BoolQuery{
+			Must: mustBoolSlice,
+		},
+	}
+}
+
+func createSchedulerBackupLogsQuery(src, dst string) *types.Query {
+	mustBoolSlice := make([]types.Query, 0)
+
+	// filter for events in the 30 minute window
+	mustBoolSlice = append(mustBoolSlice, types.Query{
+		Range: map[string]types.RangeQuery{
+			"@timestamp": types.DateRangeQuery{
+				Gte: StringPtr(FROM),
+				Lte: StringPtr("now"),
+			},
+		},
+	})
+
+	mustBoolSlice = append(mustBoolSlice, types.Query{
+		MultiMatch: &types.MultiMatchQuery{
+			Query:   "dcpipes.jsonrpctcp: SENDING",
+			Fields:  []string{"log.syslog.message"},
+			Type:    &textquerytype.Phrase,
+			Lenient: esapi.BoolPtr(true),
+		},
+	})
+
+	mustBoolSlice = append(mustBoolSlice, types.Query{
+		MultiMatch: &types.MultiMatchQuery{
+			Query:   "route",
+			Fields:  []string{"log.syslog.message"},
+			Type:    &textquerytype.Phrase,
+			Lenient: esapi.BoolPtr(true),
+		},
+	})
+
+	// Add queries for src and dst, handling the case where the first character of the UUID is a letter.
+	mustBoolSlice = append(mustBoolSlice, CreateSchedulerIdMatchQuery(src))
+	mustBoolSlice = append(mustBoolSlice, CreateSchedulerIdMatchQuery(dst))
 
 	return &types.Query{
 		Bool: &types.BoolQuery{

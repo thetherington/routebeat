@@ -123,23 +123,13 @@ func ProcessMagnumLogs(args *MagnumLogsOptions) (*MagnumLogsResponse, error) {
 // QueryLogsFromEvent collects the system logs for a given event by extracting the busname from the event,
 // looking up the physical route information in the cache, and then executing multi-search queries to retrieve the
 // logs for each slab in the physical route.
-func QueryLogsFromEvent(ctx context.Context, event *beat.Event) (analytics.MultiLogResults, error) {
+func QueryLogsFromEvent(ctx context.Context, event *beat.Event, magclientsrvLogs bool) (analytics.MultiLogResults, error) {
+	queryOptions := make([]analytics.MultiLogQuery, 0)
+
 	// extract srcId and dstId from the event for log analysis
 	srcId, dstId, err := getSrcDstIds(event)
 	if err != nil {
 		return nil, fmt.Errorf("getSrcDstIds error: %s", err.Error())
-	}
-
-	// extract the busname from the event to look up the physical route information in the cache
-	busname, err := ExtractStringFromEvent(event, "destinationLabel")
-	if err != nil {
-		return nil, fmt.Errorf("ExtractStringFromEvent error: %s", err.Error())
-	}
-
-	// look up the physical route information in the cache using the busname extracted from the event. If there is no busname or no physical route information in the cache for that busname, then we can't collect the slab logs for this event since we won't know which slabs to query for, so return an error.
-	slabs, ok := busRoutingCache.Get(busname)
-	if !ok {
-		return nil, fmt.Errorf("busRoutingCache.Get: no physical route information found in cache for destinationLabel: %s", busname)
 	}
 
 	address, err := ExtractStringFromEvent(event, "routeableTerminal.physicalSource.port.address")
@@ -152,16 +142,32 @@ func QueryLogsFromEvent(ctx context.Context, event *beat.Event) (analytics.Multi
 		return nil, fmt.Errorf("ParseMulticastAddress error: %s", err.Error())
 	}
 
-	queryOptions := make([]analytics.MultiLogQuery, 0)
-
-	// for each slab in the physical route, create a MultiLogQuery with the source and destination information for that slab to collect the relevant logs for it.
-	for _, slab := range slabs {
-		q := analytics.NewSlabLogQuery(slab.Device, mcast, slab.Output)
-		queryOptions = append(queryOptions, q)
+	// extract the busname from the event to look up the physical route information in the cache
+	busname, err := ExtractStringFromEvent(event, "destinationLabel")
+	if err != nil {
+		return nil, fmt.Errorf("ExtractStringFromEvent error: %s", err.Error())
 	}
 
-	// also create a MultiLogQuery for the scheduler logs for the overall route from the source to destination to collect relevant logs for the scheduler that may not be tied to a specific slab but could still provide useful information about the route.
+	// look up the physical route information in the cache using the busname extracted from the event. If there is no busname or no physical route information in the cache for that busname, then we can't collect the slab logs for this event since we won't know which slabs to query for, so return an error.
+	if slabs, ok := busRoutingCache.Get(busname); ok {
+		// for each slab in the physical route, create a MultiLogQuery with the source and destination information
+		// for that slab to collect the relevant logs for it.
+		for _, slab := range slabs {
+			q := analytics.NewSlabLogQuery(slab.Device, mcast, slab.Output)
+			queryOptions = append(queryOptions, q)
+		}
+	}
+
+	// create a MultiLogQuery for the scheduler logs for the overall route from the source to destination to collect relevant logs for the scheduler that may not be tied to a specific slab but could still provide useful information about the route.
 	queryOptions = append(queryOptions, analytics.NewSchedulerLogQuery(srcId, dstId))
+
+	// create a MultiLogQuery for the scheduler backup logs for the overall route from the source to destination to collect relevant logs for the scheduler that may not be tied to a specific slab but could still provide useful information about the route.
+	queryOptions = append(queryOptions, analytics.NewSchedulerBackupLogQuery(srcId, dstId))
+
+	// create a MultiLogQuery for the magnum_client_srv logs for the overall route from the source to destination to collect relevant logs for the magnum client that may not be tied to a specific slab but could still provide useful information about the route.
+	if magclientsrvLogs {
+		queryOptions = append(queryOptions, analytics.NewMagnumClientSrvLogQuery(srcId, dstId))
+	}
 
 	// execute the multi-search query to collect the logs for each slab in the physical route as well as the scheduler logs for the overall route. If there are no results found for any of the queries, then return an error since we won't have any logs to analyze for this event.
 	logMap, err := db.SearchMultiLogs(ctx, queryOptions...)
@@ -179,6 +185,7 @@ func QueryLogsFromEvent(ctx context.Context, event *beat.Event) (analytics.Multi
 type MatchLogArgs struct {
 	logCollection analytics.MultiLogResults
 	reference     time.Time
+	referenceOpt  time.Time
 	window        time.Duration
 }
 
@@ -282,6 +289,58 @@ func MatchSchedulerRouteLog(args *MatchLogArgs) (*analytics.Source, error) {
 			// update the cache to mark this log as processed so that it won't be matched to another reference log
 			// in the future and create duplicate events.
 			logCache.Set(log.Id, struct{}{})
+
+			break
+		}
+	}
+
+	if matchedLogs == nil {
+		return nil, ErrNoLogsFound
+	}
+
+	return matchedLogs, nil
+}
+
+func MatchMagnumClientSrvLog(args *MatchLogArgs) (*analytics.Source, error) {
+	var matchedLogs *analytics.Source
+
+	// get the keys from args.logCollection that contain "scheduler"
+	for key, logs := range args.logCollection {
+		if !strings.Contains(key, "magnum_client_srv") {
+			continue
+		}
+
+		// range backwards through the logs to find the most recent log that is after the reference log timestamp and within the configured window and not in the cache.
+		for i := len(logs) - 1; i >= 0; i-- {
+			log := logs[i]
+			// if the log is in the cache, then skip it to prevent matching the same log to multiple reference
+			// logs and creating duplicate events.
+			if logCache.Has(log.Id) {
+				continue
+			}
+
+			// if arg.reference is nil, then any log that is immediately before the arg.referenceOpt timestamp is considered a match.
+			// only if it's between the arg.window and args.referenceOpt timestamp. This is to handle cases where the magnum_client_srv log may not be exactly at the same time as the reference log but is still related to the same event.
+			if args.reference.IsZero() {
+				if (log.Device.Timestamp.Before(args.referenceOpt) || log.Device.Timestamp.Equal(args.referenceOpt)) &&
+					(args.referenceOpt.Sub(log.Device.Timestamp) <= args.window) {
+					matchedLogs = &log
+				} else {
+					continue
+				}
+			} else {
+				// if the log is between reference and referenceOpt and not in the cache, then we can consider it a match and set it as the matched log to return.
+				if (log.Device.Timestamp.After(args.reference) || log.Device.Timestamp.Equal(args.reference)) &&
+					(log.Device.Timestamp.Before(args.referenceOpt) || log.Device.Timestamp.Equal(args.referenceOpt)) {
+					// this is a log within the reference window
+					matchedLogs = &log
+				} else {
+					continue
+				}
+			}
+
+			// update the cache to mark this log as processed so that it won't be matched to another reference log
+			// logCache.Set(log.Id, struct{}{})
 
 			break
 		}

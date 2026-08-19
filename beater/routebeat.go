@@ -650,7 +650,7 @@ func (bt *routebeat) AnalyzeLogCollection(event *beat.Event) error {
 	// by executing multi-search queries using the QueryLogsFromEvent function.
 	// The QueryLogsFromEvent function will return a map of log results for each query keyed by the query's Key() value.
 	// If there are no results found for any of the queries, then return an error since we won't have any logs to analyze for this event.
-	logCollection, err := QueryLogsFromEvent(context.Background(), event)
+	logCollection, err := QueryLogsFromEvent(context.Background(), event, bt.config.ES.Dev.MagClientSrvLogs)
 	if err != nil {
 		return err
 	}
@@ -693,6 +693,38 @@ func (bt *routebeat) AnalyzeLogCollection(event *beat.Event) error {
 		// replace the event timestamp with the scheduler log timestamp since this is when the route began
 		event.Timestamp = schedulerLog.Device.Timestamp
 		haveSchedLog = true
+	}
+
+	// if the magClientSrv logs are enabled in the config, then match the magClientSrv logs for this event by comparing the timestamps
+	// of the magClientSrv logs to the timestamp of the route request log and ensuring that they are within the configured time window
+	// and not in the cache.
+	if bt.config.ES.Dev.MagClientSrvLogs {
+		var ref time.Time
+		if haveSchedLog {
+			ref = schedulerLog.Device.Timestamp
+		}
+
+		// match the magnum_client_srv log for this event by comparing the timestamps of the magnum_client_srv logs to the timestamp of the route request log and ensuring that they are within the configured time window and not in the cache.
+		// If there is no matched magnum_client_srv log found, then log a debug message but do not return an error since we
+		// can still analyze the slab and magnum logs for this event without the magnum_client_srv logs. add the log to the begining of the matchedLogMessages slice
+		magClientSrvLog, err := MatchMagnumClientSrvLog(&MatchLogArgs{
+			logCollection: logCollection,
+			reference:     ref,
+			referenceOpt:  magnumLogs.Request.Device.Timestamp,
+			window:        5 * time.Second, // smaller window for matching the scheduler log since it should be very close to the request log timestamp
+		})
+		if err == nil {
+			// if there is a scheduler log, then insert the magClientSrvLog after the scheduler log, otherwise insert it at the beginning of the matchedLogMessages slice
+			if haveSchedLog {
+				matchedLogMessages = append(matchedLogMessages[:1], append([]logEntry{
+					{Log: magClientSrvLog.Log.Syslog.Message, Time: magClientSrvLog.Device.Timestamp, Type: "magclientsrv"},
+				}, matchedLogMessages[1:]...)...)
+			} else {
+				matchedLogMessages = append([]logEntry{
+					{Log: magClientSrvLog.Log.Syslog.Message, Time: magClientSrvLog.Device.Timestamp, Type: "magclientsrv"},
+				}, matchedLogMessages...)
+			}
+		}
 	}
 
 	// if we have both slab logs and a scheduler log,
