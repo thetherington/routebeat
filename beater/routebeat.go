@@ -21,6 +21,7 @@ import (
 	insite "github.com/thetherington/routebeat/beater/analytics"
 	"github.com/thetherington/routebeat/beater/cache"
 	"github.com/thetherington/routebeat/beater/httpclient"
+	"github.com/thetherington/routebeat/beater/httpserver"
 	"github.com/thetherington/routebeat/beater/notify"
 	routeCfg "github.com/thetherington/routebeat/config"
 )
@@ -28,16 +29,20 @@ import (
 const (
 	ANALYTICS_TIMEOUT = 10
 	BUSCACHE_FILE     = "busCache.gob"
+	HOTCACHE_FILE     = "scheduleHotCache.gob"
 	SCHEDCACHE_FILE   = "scheduleCache.gob"
 	GLOBAL_COUNTERS   = "global"
 )
 
 var (
-	db            insite.SearchInterface
-	notifier      notify.NotiferInterface
-	scheduleCache = cache.NewCacheMap[string, []*insite.BusRouting]()
-	countersCache = cache.NewCacheMap[string, *Counters]()
-	busCache      = cache.NewCacheMap[string, *BusState]()
+	db         insite.SearchInterface
+	notifier   notify.NotiferInterface
+	httpServer *httpserver.Server[[]SchedulerAPGEvent]
+
+	scheduleCache    = cache.NewCacheMap[string, []*insite.BusRouting]()
+	scheduleHotCache = cache.NewCacheMap[string, *insite.BusRouting]()
+	countersCache    = cache.NewCacheMap[string, *Counters]()
+	busCache         = cache.NewCacheMap[string, *BusState]()
 
 	lastNotificationTime time.Time
 )
@@ -87,9 +92,17 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		logp.Info("Loaded busCache length: %d keys", busCache.Length())
 	}
 
+	// try to load the scheduleHotCache from file
+	if err := scheduleHotCache.LoadFromFile(HOTCACHE_FILE); err != nil {
+		logp.Err("failed to load scheduleHotCache from file: %v", err)
+	} else {
+		logp.Info("Loaded scheduleHotCache length: %d keys", scheduleHotCache.Length())
+	}
+
 	// debugging/development
 	if c.ES.Dev.LoadCache {
 		scheduleCache.LoadFromFile(SCHEDCACHE_FILE)
+		logp.Info("Loaded scheduleCache length: %d keys", scheduleCache.Length())
 	}
 
 	done := make(chan struct{})
@@ -141,6 +154,9 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 	} else {
 		logp.Warn("No notify configuration found. Notifications will be disabled")
 	}
+
+	// create the http server to receive scheduler events into the routebeat hook callback function
+	httpServer = httpserver.New(8082, done, SchedulerHookCallback)
 
 	bt := &routebeat{
 		done:       done,
@@ -251,6 +267,12 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		}
 	}()
 
+	// start the http server to receive scheduler events into the routebeat hook callback function
+	httpServer.Start()
+
+	// start the hot cache cleanup routine to remove any entries that are no longer active based on the current time every 24 hours
+	go CleanupScheduleHotCache(bt.done)
+
 	// block here until the application is terminated
 	<-bt.done
 
@@ -275,8 +297,10 @@ func (bt *routebeat) Stop() {
 
 	// Stops go routines:
 	//   - magnum token refresh
+	//   - http server hook callback
+	//   - stops scheduler hot cache cleanup routine
 	//   - elasticsearch scheduleQuery
-	//   - busCache.SaveToFile
+	//   - busCache/hotCache SaveToFile
 	//   - query terminals routine
 	//   - subscription run reconnect routine
 	//   - exits beat run function
@@ -626,34 +650,10 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 		event.Delete("routeableTerminal")
 	}
 
-	// get the busrouting information from the schedule cache
-	// return the event as-isif the cache doesn't have a key
-	routings, ok := scheduleCache.Get(dstLabel)
+	// get the busrouting information from the schedule cache or hot cache based on the destination label
+	// return the event as-is if the cache doesn't have a key
+	routing, ok := GetBusRoutingFromCaches(dstLabel, bt.config.ES.Dev.ValidateEndDate)
 	if !ok {
-		event.PutValue("schedule.matched", false)
-		return &EventResults{event: &event, notifications: notifications}, ErrScheduleBusNotFound
-	}
-
-	var routing *insite.BusRouting
-
-	// select the routing based if where now is between the routing.StartDate and routing.EndDate
-	for _, r := range routings {
-		if r == nil {
-			continue
-		}
-
-		// if we are not validating end dates
-		if !bt.config.ES.Dev.ValidateEndDate {
-			routing = r
-			break
-		}
-
-		if time.Now().After(*r.StartDate) && (r.EndDate == nil || time.Now().Before(*r.EndDate)) {
-			routing = r
-			break
-		}
-	}
-	if routing == nil {
 		event.PutValue("schedule.matched", false)
 		return &EventResults{event: &event, notifications: notifications}, ErrScheduleBusNotFound
 	}
@@ -678,6 +678,51 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 		currentState = Unsched
 	}
 
+	// get the stored state from the busCache (don't update yet)
+	// if the bus code doesn't exist in the cache, create a new BusState with the current state
+	if busState, ok := busCache.Get(dstLabel); ok {
+		prevState, prevSrcLabel = busState.State, busState.Source
+	} else {
+		busCache.Set(dstLabel, NewBusState(currentState, srcLabel))
+	}
+
+	// here we check that if the event is a notification, and the currentState is Unsched,
+	// and the previous state is not Unknown, but the current state and previous state are not the same then
+	// there's a chance there is an Advance Event or a FF so there might be a ingest in schedule hot cache
+	unscheduledRouteChange := (eventType == Notification) &&
+		(currentState == Unsched) &&
+		(prevState != currentState) &&
+		(prevState != Unknown)
+
+	// fmt.Printf("\n\nDestination:%s UnscheduledRouteChange:%t EventType:%v CurrentState:%v PrevState:%v\n\n", dstLabel, unscheduledRouteChange, eventType, currentState, prevState)
+
+	if unscheduledRouteChange {
+		now := time.Now()
+
+		// sleep for 5 seconds to allow time for the hot cache to be updated by the scheduler hook callback
+		// recheck the bus routing from the hot cache to see if there's a new routing for the destination label
+		time.Sleep(5 * time.Second)
+
+		if r, ok := GetScheduleHotRoute(dstLabel, now); ok {
+			logp.Debug("ScheduleHotCache", "Found routing for Destination:%s Source:%s %+v", dstLabel, srcLabel, r)
+
+			switch {
+			case srcLabel == r.Pri:
+				currentState = Primary
+			// if the secondary label matches the source label and it's not blank, then it's in backup state
+			case srcLabel == r.Sec && r.Sec != "":
+				currentState = Backup
+			}
+
+			// if the current state is not Unsched, then update the routing to the hot routing
+			if currentState != Unsched {
+				routing = r
+			}
+		}
+
+		// fmt.Printf("\n\nDestination:%s Rechecked CurrentState:%v\n\n", dstLabel, currentState)
+	}
+
 	// schedule grouped data
 	event.PutValue("schedule", mapstr.M{
 		"buscode": dstLabel,
@@ -686,18 +731,6 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 		"backup":  routing.Sec,
 		"matched": true,
 	})
-
-	// increment counter for the routing state
-	counters.Increment(currentState)
-
-	// get the stored state from the busCache (don't update yet)
-	if busState, ok := busCache.Get(dstLabel); ok {
-		prevState = busState.State
-		prevSrcLabel = busState.Source
-	} else {
-		// if the bus code doesn't exist in the cache, create a new BusState with the current state
-		busCache.Set(dstLabel, NewBusState(currentState, srcLabel))
-	}
 
 	// check if there's a there's a transition
 	// create notifications for the state change, decrement the counters based on the prevState, and add the deviationStartTime field to the transition time
@@ -821,6 +854,9 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr(FlagOnlyTransition))
 		})
 	}
+
+	// increment counter for the routing state
+	counters.Increment(currentState)
 
 	return &EventResults{event: &event, notifications: notifications}, nil
 }

@@ -113,3 +113,13 @@ func (c *CacheMap[K, V]) LoadFromFile(filename string) error {
 	dec := gob.NewDecoder(file)
 	return dec.Decode(&c.Store)
 }
+
+// Lock the cache for exclusive access
+func (c *CacheMap[K, V]) Lock() {
+	c.mu.Lock()
+}
+
+// Unlock the cache after exclusive access
+func (c *CacheMap[K, V]) Unlock() {
+	c.mu.Unlock()
+}
