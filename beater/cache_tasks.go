@@ -106,6 +106,11 @@ func SchedulerHookCallback(ctx context.Context, payload []SchedulerAPGEvent) err
 
 	// iterate over each payload event, parse the start and end date and create bus routing objects to update the hot cache
 	for _, event := range payload {
+		if event.Task != "apg" {
+			logp.Debug("SchedulerHookCallback", "skipping event %s with task %s", event.Output, event.Task)
+			continue
+		}
+
 		logp.Debug("SchedulerHookCallback", "processing event: %s", event.Output)
 
 		// parse the start and end date

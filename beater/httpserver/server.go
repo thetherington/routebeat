@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"time"
@@ -98,17 +99,13 @@ func (s *Server[T]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server[T]) handleSchedulerEvent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		logp.Warn("scheduler event endpoint rejected non-POST method: %s", r.Method)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		_, _ = fmt.Fprintf(w, `{"error":"method not allowed"}`)
+		WriteJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
 
 	if r.Body == nil {
 		logp.Err("scheduler event request body is missing")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = fmt.Fprintf(w, `{"error":"request body is required"}`)
+		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "request body is required"})
 		return
 	}
 	defer r.Body.Close()
@@ -116,17 +113,13 @@ func (s *Server[T]) handleSchedulerEvent(w http.ResponseWriter, r *http.Request)
 	var payload T
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		logp.Err("scheduler event payload decode failed: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = fmt.Fprintf(w, `{"error":"invalid request payload: %v"}`, err)
+		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request payload: %v", err)})
 		return
 	}
 
 	if s.callback == nil {
 		logp.Err("scheduler event callback is not configured")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = fmt.Fprintf(w, `{"error":"callback not configured"}`)
+		WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "callback not configured"})
 		return
 	}
 
@@ -136,7 +129,27 @@ func (s *Server[T]) handleSchedulerEvent(w http.ResponseWriter, r *http.Request)
 		}
 	}()
 
+	WriteJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+func WriteJSON(w http.ResponseWriter, status int, data any, headers ...http.Header) error {
+	out, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	// add additional header if provided (variadic parameter)
+	if len(headers) > 0 {
+		maps.Copy(w.Header(), headers[0])
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_, _ = fmt.Fprintf(w, `{"status":"accepted"}`)
+	w.WriteHeader(status)
+
+	_, err = w.Write(out)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

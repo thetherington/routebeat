@@ -220,6 +220,7 @@ func (bs *BusState) CorrectDefunctTransition(state RoutingState) bool {
 			bs.ResetTransition()
 		} else {
 			bs.SetTransitionTime(time.Now())
+			bs.Counter = 0
 		}
 
 		return true
