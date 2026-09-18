@@ -56,3 +56,6 @@ routebeat:
       client_id: "insite-poller"
       client_secret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd"
       token_url: "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token"
+
+    # Defines the idle duration after which the subscription client will be closed to test reconnect logic
+    sub_reconnect_idle: 120m

@@ -12,10 +12,11 @@ type MagnumOIDCAuth struct {
 }
 
 type MagnumAPI struct {
-	Url           string         `config:"url"`
-	Limit         int            `config:"limit"`
-	Notifications bool           `config:"notifications"`
-	Auth          MagnumOIDCAuth `config:"auth"`
+	Url              string         `config:"url"`
+	Limit            int            `config:"limit"`
+	Notifications    bool           `config:"notifications"`
+	Auth             MagnumOIDCAuth `config:"auth"`
+	SubReconnectIdle time.Duration  `config:"sub_reconnect_idle"`
 }
 
 type Mapping struct {
@@ -61,5 +62,6 @@ var DefaultConfig = Config{
 			ClientSecret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd",
 			TokenURL:     "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token",
 		},
+		SubReconnectIdle: 120 * time.Minute,
 	},
 }

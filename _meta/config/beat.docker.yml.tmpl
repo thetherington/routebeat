@@ -16,7 +16,8 @@ routebeat:
   api:
     url: "https://129.153.131.121/graphql/v1.1"
     notifications: true
-    limit: 2000    
+    limit: 2000
+    sub_reconnect_idle: 120m
     auth:
       client_id: "insite-poller"
       client_secret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd"

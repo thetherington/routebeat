@@ -55,3 +55,6 @@ routebeat:
       client_id: "<client id>"
       client_secret: "<secret key>"
       token_url: "https://<IP</auth/realms/magnum/protocol/openid-connect/token"
+  
+    # Defines the idle duration after which the subscription client will be closed to test reconnect logic
+    sub_reconnect_idle: 120m
