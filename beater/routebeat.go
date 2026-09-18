@@ -294,9 +294,6 @@ func (bt *routebeat) SubscribeTerminals(query any, tag string, eventType EventTy
 		"isSub": (eventType == Notification), // if event type is Notification then isSub should be true, otherwise false
 	}
 
-	queryText, _, _ := graphql.ConstructSubscription(query, v)
-	fmt.Println("Constructed subscription query:", queryText)
-
 	// subscribe to a query and run a callback function to process the messages
 	id, err := bt.subClient.Subscribe(query, v, func(message []byte, err error) error {
 		if err != nil {
