@@ -18,6 +18,7 @@ routebeat:
       client_secret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd"
       token_url: "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token"
     timeout: 10s
+    sub_reconnect_idle: 120m
   elasticsearch:
     address: "http://127.0.0.1:9200"
     index: "log-magnum-scheduler-*"    

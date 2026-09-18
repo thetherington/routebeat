@@ -43,6 +43,9 @@ routebeat:
     # Defines how long to wait for the API to respond before timing out
     timeout: 10s
 
+    # Defines the idle duration after which the subscription client will be closed to test reconnect logic
+    sub_reconnect_idle: 120m
+
   elasticsearch:
     # Elasticsearch server node url
     address: "http://127.0.0.1:9200"

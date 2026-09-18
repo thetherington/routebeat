@@ -44,6 +44,9 @@ routebeat:
     # Defines how long to wait for the API to respond before timing out
     timeout: 10s
 
+    # Defines the idle duration after which the subscription client will be closed to test reconnect logic
+    sub_reconnect_idle: 31m
+
   elasticsearch:
     # Elasticsearch server node url
     address: "http://10.9.0.69:9200"
@@ -57,13 +60,13 @@ routebeat:
     # developer settings to save/load cache
     dev:
       # load a local copy of the schedule cache (scheduleCache.gob)
-      load_cache: false
+      load_cache: true
 
       # save a the schedule cache on shutdown (scheduleCache.gob)
       save_cache: false 
       
       # disable validating the end date (default true)
-      validate_end_date: true
+      validate_end_date: false
 
   notifiers:
     auto:

@@ -185,10 +185,17 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	// create the subscription client whether it's needed or not
 	bt.subClient = graphql.
 		NewSubscriptionClient(getWssURL(bt.config.API.Url)).
+		WithWebsocketConnectionIdleTimeout(1 * time.Minute).
 		WithWebSocketOptions(graphql.WebsocketOptions{
 			HTTPClient: bt.httpClient,
 		}).
 		OnError(func(sc *graphql.SubscriptionClient, err error) error {
+			if sc.IsWebsocketConnectionIdleTimeout(err) {
+				logp.Warn("Subscription went stale (Idle Timeout)! Re-initiating...")
+				// Returning nil tells the client's internal loop to attempt a retry
+				return nil
+			}
+
 			logp.Err("subscription client OnError: %v", err)
 			return err
 		}).
@@ -226,9 +233,8 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	// and close the subscription client if it has been more than 60 minutes since the
 	// last notification was received to resubscribe to the subscriptions and run the reconnect logic of the subscription client
 	go func() {
-		ticker := time.NewTicker(10 * time.Minute)
+		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
-
 		// initialize the last notification time to now so that we don't
 		//  immediately close the subscription client on startup before we receive any notifications
 		lastNotificationTime = time.Now()
@@ -239,7 +245,7 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 				return
 			case <-ticker.C:
 				// if it has been more than 120 minutes since the last notification was received, then close the subscription client
-				if time.Since(lastNotificationTime) > 120*time.Minute {
+				if time.Since(lastNotificationTime) > bt.config.API.SubReconnectIdle {
 					logp.Info("closing subscription client to test reconnect logic, last notification received at: %s", lastNotificationTime.Format(time.RFC3339))
 					bt.subClient.Close()
 

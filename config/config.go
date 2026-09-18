@@ -18,6 +18,7 @@ type MagnumAPI struct {
 	SerializeQueries bool           `config:"serialize_queries"`
 	Auth             MagnumOIDCAuth `config:"auth"`
 	Timeout          time.Duration  `config:"timeout"`
+	SubReconnectIdle time.Duration  `config:"sub_reconnect_idle"`
 }
 
 type Mapping struct {
@@ -79,7 +80,8 @@ var DefaultConfig = Config{
 			ClientSecret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd",
 			TokenURL:     "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token",
 		},
-		Timeout: 10 * time.Second,
+		Timeout:          10 * time.Second,
+		SubReconnectIdle: 120 * time.Minute,
 	},
 	ES: Elasticsearch{
 		Address: "http://127.0.0.1:9200",
