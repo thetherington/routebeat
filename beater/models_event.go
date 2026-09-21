@@ -7,7 +7,7 @@ type SchedulerAPGEvent struct {
 	EventID       string `json:"event_id"`
 	Error         string `json:"error"`
 	History       []any  `json:"history"`
-	Start         int64  `json:"start"`
+	Start         string `json:"start"`
 	StartDate     string `json:"start_date"`
 	OutputPooled  bool   `json:"output_pooled"`
 	ScheduleID    string `json:"schedule_id"`
@@ -33,7 +33,7 @@ type SchedulerAPGEvent struct {
 	OutputBlocking bool     `json:"output_blocking"`
 	Comment        string   `json:"comment"`
 	Tags           []string `json:"tags"`
-	End            int64    `json:"end"`
+	End            string   `json:"end"`
 	StartOffset    string   `json:"start_offset"`
 	Output         string   `json:"output"`
 }

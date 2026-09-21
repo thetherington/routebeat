@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -12,17 +13,17 @@ import (
 	"github.com/elastic/elastic-agent-libs/logp"
 )
 
-// CallbackFunc is a generic callback executed after a valid payload is decoded.
-// It should contain cache update logic or any other business processing.
-type CallbackFunc[T any] func(ctx context.Context, payload T) error
+// CallbackFunc is executed with the raw request payload bytes.
+// It should contain parsing and business processing logic.
+type CallbackFunc func(ctx context.Context, payload []byte) error
 
 const schedulerEventsPath = "/api/v1/scheduler/events"
 
 // Server implements a minimal HTTP server for scheduler event updates.
-type Server[T any] struct {
+type Server struct {
 	addr      string
 	done      <-chan struct{}
-	callback  CallbackFunc[T]
+	callback  CallbackFunc
 	mux       *http.ServeMux
 	server    *http.Server
 	listening chan struct{}
@@ -30,12 +31,12 @@ type Server[T any] struct {
 
 // New creates an HTTP server configured to listen on the given port, watch the shutdown
 // channel, and route POST requests to a generic callback.
-func New[T any](port int, done <-chan struct{}, callback CallbackFunc[T]) *Server[T] {
+func New(port int, done <-chan struct{}, callback CallbackFunc) *Server {
 	if port <= 0 || port > 65535 {
 		port = 8080
 	}
 
-	s := &Server[T]{
+	s := &Server{
 		addr:      fmt.Sprintf(":%d", port),
 		done:      done,
 		callback:  callback,
@@ -48,7 +49,7 @@ func New[T any](port int, done <-chan struct{}, callback CallbackFunc[T]) *Serve
 }
 
 // Start starts the HTTP server in a background goroutine.
-func (s *Server[T]) Start() error {
+func (s *Server) Start() error {
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		logp.Err("HTTP hook server failed to listen on %s: %v", s.addr, err)
@@ -92,11 +93,11 @@ func (s *Server[T]) Start() error {
 }
 
 // ServeHTTP exposes the server as an http.Handler for testing and embedding.
-func (s *Server[T]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handleSchedulerEvent(w, r)
 }
 
-func (s *Server[T]) handleSchedulerEvent(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSchedulerEvent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		logp.Warn("scheduler event endpoint rejected non-POST method: %s", r.Method)
 		WriteJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -110,10 +111,16 @@ func (s *Server[T]) handleSchedulerEvent(w http.ResponseWriter, r *http.Request)
 	}
 	defer r.Body.Close()
 
-	var payload T
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		logp.Err("scheduler event payload decode failed: %v", err)
+	payload, err := io.ReadAll(r.Body)
+	if err != nil {
+		logp.Err("scheduler event payload read failed: %v", err)
 		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request payload: %v", err)})
+		return
+	}
+
+	if len(payload) == 0 {
+		logp.Err("scheduler event payload is empty")
+		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "request payload is empty"})
 		return
 	}
 
@@ -123,11 +130,9 @@ func (s *Server[T]) handleSchedulerEvent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	go func() {
-		if err := s.callback(r.Context(), payload); err != nil {
-			logp.Err("scheduler event callback failed: %v", err)
-		}
-	}()
+	if err := s.callback(r.Context(), payload); err != nil {
+		logp.Err("scheduler event callback failed: %v", err)
+	}
 
 	WriteJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }

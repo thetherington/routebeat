@@ -37,7 +37,7 @@ const (
 var (
 	db         insite.SearchInterface
 	notifier   notify.NotiferInterface
-	httpServer *httpserver.Server[[]SchedulerAPGEvent]
+	httpServer *httpserver.Server
 
 	scheduleCache    = cache.NewCacheMap[string, []*insite.BusRouting]()
 	scheduleHotCache = cache.NewCacheMap[string, *insite.BusRouting]()
@@ -201,10 +201,17 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	// create the subscription client whether it's needed or not
 	bt.subClient = graphql.
 		NewSubscriptionClient(getWssURL(bt.config.API.Url)).
+		WithWebsocketConnectionIdleTimeout(1 * time.Minute).
 		WithWebSocketOptions(graphql.WebsocketOptions{
 			HTTPClient: bt.httpClient,
 		}).
 		OnError(func(sc *graphql.SubscriptionClient, err error) error {
+			if sc.IsWebsocketConnectionIdleTimeout(err) {
+				logp.Warn("Subscription went stale (Idle Timeout)! Re-initiating...")
+				// Returning nil tells the client's internal loop to attempt a retry
+				return nil
+			}
+
 			logp.Err("subscription client OnError: %v", err)
 			return err
 		}).
@@ -255,7 +262,7 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 				return
 			case <-ticker.C:
 				// if it has been more than 120 minutes since the last notification was received, then close the subscription client
-				if time.Since(lastNotificationTime) > 120*time.Minute {
+				if time.Since(lastNotificationTime) > bt.config.API.SubReconnectIdle {
 					logp.Info("closing subscription client to test reconnect logic, last notification received at: %s", lastNotificationTime.Format(time.RFC3339))
 					bt.subClient.Close()
 
@@ -272,6 +279,9 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 
 	// start the hot cache cleanup routine to remove any entries that are no longer active based on the current time every 24 hours
 	go CleanupScheduleHotCache(bt.done)
+
+	// periodically log scheduler event counters for visibility during runtime
+	go logSchedulerEventCounters(bt.done)
 
 	// block here until the application is terminated
 	<-bt.done
@@ -299,6 +309,7 @@ func (bt *routebeat) Stop() {
 	//   - magnum token refresh
 	//   - http server hook callback
 	//   - stops scheduler hot cache cleanup routine
+	//   - log scheduler event counters routine
 	//   - elasticsearch scheduleQuery
 	//   - busCache/hotCache SaveToFile
 	//   - query terminals routine
