@@ -85,6 +85,13 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 			Strict:                c.ES.Strict,
 			UseLogIngestTimestamp: c.ES.Dev.UseLogIngestTimestamp,
 			TimeZoneFix:           c.ES.Dev.SwapSlabLogTimezone,
+
+			Username: c.ES.Username,
+			Password: c.ES.Password,
+			APIKey:   c.ES.APIKey,
+
+			CACert:             c.ES.SSL.CACert,
+			InsecureSkipVerify: c.ES.SSL.InsecureSkipVerify,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create elasticsearch client: %w", err)

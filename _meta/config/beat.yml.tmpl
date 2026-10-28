@@ -28,6 +28,20 @@ routebeat:
     # Index pattern to query for syslog data
     index: "log-syslog-informational-*"
 
+    # (optional) Authentication credentials - either API key or username/password.
+    # api_key takes precedence when both are set
+    #api_key: "id:api_key"
+    #username: "elastic"
+    #password: "changeme"
+
+    # (optional) TLS settings for https addresses
+    #ssl:
+      # PEM encoded CA certificate used to verify the server, in addition to the system CAs
+      #ca_cert: "/etc/routebeat/ca.crt"
+
+      # Skip server certificate verification (not recommended)
+      #insecure_skip_verify: false
+
     # Whether to strictly follow the index pattern wildcard or replace it with the current date. Setting to false will replace the wildcard with the current date, and yesterday
     strict: false
     

@@ -31,7 +31,16 @@ type Elasticsearch struct {
 	Delay    time.Duration `config:"delay"`
 	Window   time.Duration `config:"window"`
 	Sweeping bool          `config:"sweeping"`
+	Username string        `config:"username"`
+	Password string        `config:"password"`
+	APIKey   string        `config:"api_key"`
+	SSL      ESSSL         `config:"ssl"`
 	Dev      DevFlags      `config:"dev"`
+}
+
+type ESSSL struct {
+	CACert             string `config:"ca_cert"`
+	InsecureSkipVerify bool   `config:"insecure_skip_verify"`
 }
 
 type DevFlags struct {
