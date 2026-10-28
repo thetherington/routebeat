@@ -78,8 +78,14 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 	// Create the elasticsearch client handler
 	var err error
 	db, err = insite.NewClient(&insite.ClientConfig{
-		Address: c.ES.Address,
-		Index:   c.ES.Index,
+		Address:  c.ES.Address,
+		Index:    c.ES.Index,
+		Username: c.ES.Username,
+		Password: c.ES.Password,
+		APIKey:   c.ES.APIKey,
+
+		CACert:             c.ES.SSL.CACert,
+		InsecureSkipVerify: c.ES.SSL.InsecureSkipVerify,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create elasticsearch client: %w", err)

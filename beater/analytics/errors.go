@@ -13,4 +13,7 @@ var (
 	ErrCastTopHitAggregate     = errors.New("failed casting sub aggregate to *types.TopHitsAggregate")
 	ErrUnmarshallTopHitValue   = errors.New("unable to unmarshall top hit value")
 	ErrEmptyTopHitValueList    = errors.New("empty top hits value list")
+	ErrMetricValueNotString    = errors.New("top metric value not a string")
+	ErrInvalidCACert           = errors.New("no valid PEM certificates found in ca certificate file")
+	ErrIncompleteCredentials   = errors.New("both username and password are required for basic authentication")
 )

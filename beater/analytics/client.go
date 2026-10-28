@@ -2,7 +2,11 @@ package analytics
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"net/http"
+	"os"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
@@ -34,13 +38,44 @@ type BusRouting struct {
 type ClientConfig struct {
 	Address string
 	Index   string
+
+	// optional credentials. APIKey takes precedence over Username/Password when both are set
+	Username string
+	Password string
+	APIKey   string
+
+	// optional TLS settings for https addresses
+	CACert             string // path to a PEM encoded CA certificate, appended to the system pool
+	InsecureSkipVerify bool
 }
 
 // New creates a new instance of Elasticsearch
 func NewClient(cfg *ClientConfig) (SearchInterface, error) {
-	typedClient, err := elasticsearch.NewTypedClient(elasticsearch.Config{
+	transport, err := newTransport(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	esCfg := elasticsearch.Config{
 		Addresses: []string{cfg.Address},
-	})
+		Transport: transport,
+	}
+
+	// only apply credentials when provided, otherwise connect anonymously
+	switch {
+	case cfg.APIKey != "":
+		esCfg.APIKey = cfg.APIKey
+
+	case cfg.Username != "" || cfg.Password != "":
+		if cfg.Username == "" || cfg.Password == "" {
+			return nil, ErrIncompleteCredentials
+		}
+
+		esCfg.Username = cfg.Username
+		esCfg.Password = cfg.Password
+	}
+
+	typedClient, err := elasticsearch.NewTypedClient(esCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client: %w", err)
 	}
@@ -64,6 +99,37 @@ func NewClient(cfg *ClientConfig) (SearchInterface, error) {
 	}, nil
 }
 
+// newTransport builds a dedicated transport so the TLS settings are explicit rather than
+// inherited from http.DefaultTransport, which other packages modify globally
+func newTransport(cfg *ClientConfig) (*http.Transport, error) {
+	tlsCfg := &tls.Config{
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+	}
+
+	if cfg.CACert != "" {
+		pem, err := os.ReadFile(cfg.CACert)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read ca certificate: %w", err)
+		}
+
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			pool = x509.NewCertPool()
+		}
+
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, ErrInvalidCACert
+		}
+
+		tlsCfg.RootCAs = pool
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = tlsCfg
+
+	return transport, nil
+}
+
 // QuerySchedulerEventParams queries the Elasticsearch index for bus routing information based on the provided relative time.
 func (es *ESSearch) QuerySchedulerEventParams(ctx context.Context, opt ...string) (BusRouteMap, error) {
 	relative_time := "now"
@@ -80,7 +146,8 @@ func (es *ESSearch) QuerySchedulerEventParams(ctx context.Context, opt ...string
 		return nil, fmt.Errorf("failed to query elasticsearch: %w", err)
 	}
 
-	if resp.Hits.Total.Value == 0 {
+	// total can be omitted from the response, in which case the bucket checks below handle empty results
+	if resp.Hits.Total != nil && resp.Hits.Total.Value == 0 {
 		return nil, ErrNoHitsReturned
 	}
 

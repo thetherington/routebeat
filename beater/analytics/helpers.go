@@ -101,11 +101,17 @@ func processBucketsIntoBusMap(buckets []types.StringTermsBucket) BusRouteMap {
 						// extract the value of the input field from the top metrics aggregation
 						// and set it in the busMap for the corresponding bus and source (MAIN / BACKUP)
 						if v, ok := topAgg.Top[0].Metrics[sourceFieldMap["input"]]; ok {
+							input, ok := v.(string)
+							if !ok {
+								logp.Err("%v, bus: %s, key: %s, value: %v", ErrMetricValueNotString, key, inputKey, v)
+								continue
+							}
+
 							switch inputKey {
 							case "MAIN":
-								busMap[key].Pri = v.(string)
+								busMap[key].Pri = input
 							case "BACKUP":
-								busMap[key].Sec = v.(string)
+								busMap[key].Sec = input
 							}
 						}
 					}
@@ -141,11 +147,23 @@ func processBucketsIntoBusMap(buckets []types.StringTermsBucket) BusRouteMap {
 				// extract the value of the date field from the top metrics aggregation and
 				// set it in the busMap for the corresponding bus
 				if v, ok := topAgg.Top[0].Metrics[datesFieldMap[subKey]]; ok {
+					dateStr, ok := v.(string)
+					if !ok {
+						logp.Err("%v, bus: %s, key: %s, value: %v", ErrMetricValueNotString, key, subKey, v)
+						continue
+					}
+
+					t, err := ParseCustomTime(dateStr)
+					if err != nil {
+						logp.Err("failed to parse date, bus: %s, key: %s: %v", key, subKey, err)
+						continue
+					}
+
 					switch subKey {
 					case "start_date":
-						busMap[key].StartDate, _ = ParseCustomTime(v.(string))
+						busMap[key].StartDate = t
 					case "end_date":
-						busMap[key].EndDate, _ = ParseCustomTime(v.(string))
+						busMap[key].EndDate = t
 					}
 				}
 			}

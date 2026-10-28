@@ -33,10 +33,19 @@ type Developer struct {
 }
 
 type Elasticsearch struct {
-	Address string        `config:"address"`
-	Index   string        `config:"index"`
-	Period  time.Duration `config:"period"`
-	Dev     Developer     `config:"dev"`
+	Address  string        `config:"address"`
+	Index    string        `config:"index"`
+	Username string        `config:"username"`
+	Password string        `config:"password"`
+	APIKey   string        `config:"api_key"`
+	SSL      ESSSL         `config:"ssl"`
+	Period   time.Duration `config:"period"`
+	Dev      Developer     `config:"dev"`
+}
+
+type ESSSL struct {
+	CACert             string `config:"ca_cert"`
+	InsecureSkipVerify bool   `config:"insecure_skip_verify"`
 }
 
 type Notifier struct {
