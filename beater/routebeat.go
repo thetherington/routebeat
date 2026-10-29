@@ -20,6 +20,7 @@ import (
 
 	insite "github.com/thetherington/routebeat/beater/analytics"
 	"github.com/thetherington/routebeat/beater/cache"
+	"github.com/thetherington/routebeat/beater/eventsapi"
 	"github.com/thetherington/routebeat/beater/httpclient"
 	"github.com/thetherington/routebeat/beater/httpserver"
 	"github.com/thetherington/routebeat/beater/notify"
@@ -32,6 +33,8 @@ const (
 	HOTCACHE_FILE     = "scheduleHotCache.gob"
 	SCHEDCACHE_FILE   = "scheduleCache.gob"
 	GLOBAL_COUNTERS   = "global"
+
+	HOTCACHE_CLEANUP_PERIOD = 10 * time.Minute
 )
 
 var (
@@ -47,6 +50,12 @@ var (
 	lastNotificationTime time.Time
 )
 
+// noopNotifier is used when no notify configuration is found so transitions don't need a nil check
+type noopNotifier struct{}
+
+func (noopNotifier) Send(...notify.Notification) error { return nil }
+func (noopNotifier) GetOrigin() string                 { return "" }
+
 // routebeat configuration.
 type routebeat struct {
 	done       chan struct{}
@@ -56,6 +65,7 @@ type routebeat struct {
 	subClient  *graphql.SubscriptionClient
 	subIds     []string
 	queryMu    sync.Mutex
+	eventsAPI  *eventsapi.Client // nil when the events api is not configured
 }
 
 // New creates an instance of routebeat.
@@ -98,11 +108,32 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		logp.Info("Loaded busCache length: %d keys", busCache.Length())
 	}
 
-	// try to load the scheduleHotCache from file
-	if err := scheduleHotCache.LoadFromFile(HOTCACHE_FILE); err != nil {
-		logp.Err("failed to load scheduleHotCache from file: %v", err)
-	} else {
-		logp.Info("Loaded scheduleHotCache length: %d keys", scheduleHotCache.Length())
+	// create the events api client used to refresh the hot cache on demand. the response
+	// payload is processed by the SchedulerHookCallback, the same as the webhook
+	var eventsAPI *eventsapi.Client
+	if c.EventsAPI.Url != "" {
+		eventsAPI, err = eventsapi.New(eventsapi.Config{
+			Url:     c.EventsAPI.Url,
+			Timeout: c.EventsAPI.Timeout,
+			Headers: c.EventsAPI.Headers,
+		}, SchedulerHookCallback)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create events api client: %w", err)
+		}
+
+		logp.Info("Events API enabled for url: %s", c.EventsAPI.Url)
+	}
+
+	// the hot cache is only used when the webhook or the events api can update it
+	if c.Webhook.Enabled || eventsAPI != nil {
+		// try to load the scheduleHotCache from file
+		if err := scheduleHotCache.LoadFromFile(HOTCACHE_FILE); err != nil {
+			logp.Err("failed to load scheduleHotCache from file: %v", err)
+		} else {
+			// drop entries that expired while the beat was not running
+			removed := PruneScheduleHotCache(time.Now())
+			logp.Info("Loaded scheduleHotCache length: %d keys (%d expired removed)", scheduleHotCache.Length(), removed)
+		}
 	}
 
 	// debugging/development
@@ -159,16 +190,22 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		// no notify configuration found
 	} else {
 		logp.Warn("No notify configuration found. Notifications will be disabled")
+		notifier = noopNotifier{}
 	}
 
 	// create the http server to receive scheduler events into the routebeat hook callback function
-	httpServer = httpserver.New(8082, done, SchedulerHookCallback)
+	if c.Webhook.Enabled {
+		httpServer = httpserver.New(c.Webhook.Port, done, SchedulerHookCallback)
+	} else {
+		logp.Info("Webhook server disabled")
+	}
 
 	bt := &routebeat{
 		done:       done,
 		config:     c,
 		httpClient: client,
 		subIds:     make([]string, 0),
+		eventsAPI:  eventsAPI,
 	}
 
 	return bt, nil
@@ -281,10 +318,16 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	}()
 
 	// start the http server to receive scheduler events into the routebeat hook callback function
-	httpServer.Start()
+	if httpServer != nil {
+		if err := httpServer.Start(); err != nil {
+			logp.Err("failed to start webhook server: %v", err)
+		}
+	}
 
-	// start the hot cache cleanup routine to remove any entries that are no longer active based on the current time every 24 hours
-	go CleanupScheduleHotCache(bt.done)
+	// start the hot cache cleanup routine to remove any entries that are no longer active based on the current time every HOTCACHE_CLEANUP_PERIOD
+	if bt.hotCacheEnabled() {
+		go CleanupScheduleHotCache(bt.done)
+	}
 
 	// periodically log scheduler event counters for visibility during runtime
 	go logSchedulerEventCounters(bt.done)
@@ -669,30 +712,22 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 
 	// get the busrouting information from the schedule cache or hot cache based on the destination label
 	// return the event as-is if the cache doesn't have a key
-	routing, ok := GetBusRoutingFromCaches(dstLabel, bt.config.ES.Dev.ValidateEndDate)
+	routing, routingSource, ok := GetBusRoutingFromCaches(dstLabel, bt.config.ES.Dev.ValidateEndDate, bt.hotCacheEnabled())
 	if !ok {
 		event.PutValue("schedule.matched", false)
+		event.PutValue("schedule.routingSource", routingSource.String())
 		return &EventResults{event: &event, notifications: notifications}, ErrScheduleBusNotFound
 	}
 
-	logp.Debug("ScheduleCache", "Destination:%s Source:%s %+v", dstLabel, srcLabel, routing)
+	logp.Debug("ScheduleCache", "Destination:%s Source:%s RoutingSource:%s %+v", dstLabel, srcLabel, routingSource, routing)
 
-	switch {
-	case srcLabel == routing.Pri:
-		currentState = Primary
+	currentState = bt.resolveRoutingState(srcLabel, srcTags, routing)
 
-	// if the secondary label matches the source label and it's not blank, then it's in backup state
-	case srcLabel == routing.Sec && routing.Sec != "":
-		currentState = Backup
-
-	case slices.Contains(srcTags, bt.config.Zorro):
-		currentState = Zorro
-
-	case slices.Contains(srcTags, bt.config.TDA):
-		currentState = TDA
-
-	default:
-		currentState = Unsched
+	// a blank source label can't be resolved. report the unknown status only, without
+	// changing the stored bus state, sending notifications or updating the counters
+	if currentState == Unknown {
+		event.PutValue("schedule", scheduleFields(dstLabel, currentState, routing, routingSource))
+		return &EventResults{event: &event, notifications: notifications}, nil
 	}
 
 	// get the stored state from the busCache (don't update yet)
@@ -703,51 +738,14 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 		busCache.Set(dstLabel, NewBusState(currentState, srcLabel))
 	}
 
-	// here we check that if the event is a notification, and the currentState is Unsched,
-	// and the previous state is not Unknown, but the current state and previous state are not the same then
-	// there's a chance there is an Advance Event or a FF so there might be a ingest in schedule hot cache
-	unscheduledRouteChange := (eventType == Notification) &&
-		(currentState == Unsched) &&
-		(prevState != currentState) &&
-		(prevState != Unknown)
-
-	// fmt.Printf("\n\nDestination:%s UnscheduledRouteChange:%t EventType:%v CurrentState:%v PrevState:%v\n\n", dstLabel, unscheduledRouteChange, eventType, currentState, prevState)
-
-	if unscheduledRouteChange {
-		now := time.Now()
-
-		// sleep for 5 seconds to allow time for the hot cache to be updated by the scheduler hook callback
-		// recheck the bus routing from the hot cache to see if there's a new routing for the destination label
-		time.Sleep(5 * time.Second)
-
-		if r, ok := GetScheduleHotRoute(dstLabel, now); ok {
-			logp.Debug("ScheduleHotCache", "Found routing for Destination:%s Source:%s %+v", dstLabel, srcLabel, r)
-
-			switch {
-			case srcLabel == r.Pri:
-				currentState = Primary
-			// if the secondary label matches the source label and it's not blank, then it's in backup state
-			case srcLabel == r.Sec && r.Sec != "":
-				currentState = Backup
-			}
-
-			// if the current state is not Unsched, then update the routing to the hot routing
-			if currentState != Unsched {
-				routing = r
-			}
-		}
-
-		// fmt.Printf("\n\nDestination:%s Rechecked CurrentState:%v\n\n", dstLabel, currentState)
+	// a notification that moved a known bus into Unsched may be an advance event or a FF,
+	// so recheck against the hot cache (refreshed by the events api and/or the webhook)
+	if bt.hotCacheEnabled() && isUnscheduledTransition(eventType, prevState, currentState) {
+		currentState, routing, routingSource = bt.recheckHotRoute(dstLabel, srcLabel, routing, routingSource)
 	}
 
 	// schedule grouped data
-	event.PutValue("schedule", mapstr.M{
-		"buscode": dstLabel,
-		"status":  currentState.String(),
-		"primary": routing.Pri,
-		"backup":  routing.Sec,
-		"matched": true,
-	})
+	event.PutValue("schedule", scheduleFields(dstLabel, currentState, routing, routingSource))
 
 	// check if there's a there's a transition
 	// create notifications for the state change, decrement the counters based on the prevState, and add the deviationStartTime field to the transition time

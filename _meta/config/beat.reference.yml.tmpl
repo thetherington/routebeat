@@ -81,6 +81,31 @@ routebeat:
       # disable validating the end date (default true)
       validate_end_date: false
 
+  # HTTP server that receives scheduler events (POST /api/v1/scheduler/events) and updates the schedule hot cache
+  webhook:
+    # enable or disable the webhook server (default true)
+    enabled: true
+
+    # port the webhook server listens on (default 8082)
+    port: 8082
+
+    # time to wait for webhook data when a destination goes unscheduled (default 5s)
+    wait: 5s
+
+  # (optional) API queried on demand when a destination goes unscheduled to update the schedule hot cache.
+  # the response is processed the same as a webhook payload.
+  # if both the webhook and the events api are disabled, the hot cache is not used
+  #events_api:
+    # {output} in the url is replaced with the destination, otherwise it's added as the "output" query parameter
+    #url: "http://127.0.0.1:8080/api/v1/scheduler/events?output={output}"
+
+    # request timeout (default 3s)
+    #timeout: 3s
+
+    # (optional) headers added to the request
+    #headers:
+      #Authorization: "Bearer <token>"
+
   # (optional) Magnum Analytics notification programs to dispatch transition alerts
   notifiers:
     # manual notifier IP and Port settings

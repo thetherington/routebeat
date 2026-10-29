@@ -23,6 +23,10 @@ routebeat:
     address: "http://127.0.0.1:9200"
     index: "log-magnum-scheduler-*"    
     period: 5m
+  webhook:
+    enabled: true
+    port: 8082
+    wait: 5s
   notifiers:
     auto:
       host: "127.0.0.1"

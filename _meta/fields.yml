@@ -125,6 +125,11 @@
           required: false
           description: >
             matched status with the schedule
+        - name: routingSource
+          type: keyword
+          required: false
+          description: >
+            Cache that supplied the schedule routing: cache (elasticsearch poll), hotcache (webhook / events api), none (unmatched)
         - name: deviationStartTime
           type: keyword
           required: false

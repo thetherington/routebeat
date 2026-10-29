@@ -1,5 +1,22 @@
 package beater
 
+import (
+	"errors"
+	"fmt"
+	"slices"
+	"time"
+
+	insite "github.com/thetherington/routebeat/beater/analytics"
+)
+
+const schedulerDateLayout = "2006/01/02 15:04:05"
+
+// schedulerTask is a minimal view of a scheduler event used to check the task type
+// without decoding the full event (other event shapes may not fit SchedulerAPGEvent)
+type schedulerTask struct {
+	Task string `json:"task"`
+}
+
 type SchedulerAPGEvent struct {
 	EndDate       string `json:"end_date"`
 	OutputType    string `json:"output_type"`
@@ -38,7 +55,49 @@ type SchedulerAPGEvent struct {
 	Output         string   `json:"output"`
 }
 
+var (
+	errEventInactive = errors.New("scheduler event is not active")
+	errEventNoTag    = errors.New("scheduler event has no MAIN or BACKUP tag")
+)
+
+// busRouting converts the event into a bus routing object if the event is active at now
+// and is tagged MAIN or BACKUP. returns an error if the event should be discarded
+func (e *SchedulerAPGEvent) busRouting(now time.Time) (*insite.BusRouting, error) {
+	startTime, err := time.Parse(schedulerDateLayout, e.StartDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse start date: %w", err)
+	}
+
+	endTime, err := time.Parse(schedulerDateLayout, e.EndDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse end date: %w", err)
+	}
+
+	if !isActive(now, &startTime, &endTime) {
+		return nil, errEventInactive
+	}
+
+	br := &insite.BusRouting{
+		StartDate: &startTime,
+		EndDate:   &endTime,
+	}
+
+	// determine if the event is a primary or secondary bus routing based on the tags
+	switch {
+	case slices.Contains(e.Tags, "MAIN"):
+		br.Pri = e.Input
+	case slices.Contains(e.Tags, "BACKUP"):
+		br.Sec = e.Input
+	default:
+		return nil, errEventNoTag
+	}
+
+	return br, nil
+}
+
 /**
+webhook / events api payload. start and end are strings here, they're converted to numbers
+when the scheduler events are ingested into elasticsearch
 {
         "end_date": "2026/08/16 14:00:00",
         "output_type": "magnum",
@@ -46,7 +105,7 @@ type SchedulerAPGEvent struct {
         "event_id": "88a3dccc-0725-4e15-a52f-8694e6675abe",
         "error": "",
         "history": [],
-        "start": 1786885320000000000,
+        "start": "1786885320000000000",
         "start_date": "2026/08/16 13:02:00",
         "output_pooled": false,
         "schedule_id": "12856216&1786885320000000000",
@@ -73,7 +132,7 @@ type SchedulerAPGEvent struct {
         "tags": [
           "MAIN"
         ],
-        "end": 1786888800000000000,
+        "end": "1786888800000000000",
         "start_offset": "0",
         "output": "TLUPDT"
       }

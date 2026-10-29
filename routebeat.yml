@@ -80,6 +80,22 @@ routebeat:
       # disable validating the end date (default true)
       validate_end_date: true
 
+  # HTTP server that receives scheduler events and updates the schedule hot cache
+  webhook:
+    enabled: true
+    port: 8082
+
+    # time to wait for webhook data when a destination goes unscheduled
+    wait: 5s
+
+  # (optional) API queried on demand when a destination goes unscheduled to update the schedule hot cache
+  # {output} in the url is replaced with the destination, otherwise it's added as the "output" query parameter
+  #events_api:
+    #url: "http://127.0.0.1:8080/api/v1/scheduler/events?output={output}"
+    #timeout: 3s
+    #headers:
+      #Authorization: "Bearer <token>"
+
   notifiers:
     auto:
       host: "172.16.205.80"

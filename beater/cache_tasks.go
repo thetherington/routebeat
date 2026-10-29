@@ -1,10 +1,11 @@
 package beater
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"slices"
 	"sync/atomic"
 	"time"
 
@@ -15,9 +16,14 @@ import (
 
 var schedulerEventCounters struct {
 	nonApg     int64
+	invalid    int64
+	noTag      int64
 	apgInTime  int64
 	apgOutTime int64
 }
+
+// quoted task value used to cheaply discard non-apg events before any json decoding
+var apgTaskBytes = []byte(`"apg"`)
 
 // logSchedulerEventCounters periodically logs the counts of different scheduler events.
 func logSchedulerEventCounters(done <-chan struct{}) {
@@ -30,13 +36,17 @@ func logSchedulerEventCounters(done <-chan struct{}) {
 			return
 		case <-ticker.C:
 			nonApg := atomic.SwapInt64(&schedulerEventCounters.nonApg, 0)
+			invalid := atomic.SwapInt64(&schedulerEventCounters.invalid, 0)
+			noTag := atomic.SwapInt64(&schedulerEventCounters.noTag, 0)
 			apgInTime := atomic.SwapInt64(&schedulerEventCounters.apgInTime, 0)
 			apgOutTime := atomic.SwapInt64(&schedulerEventCounters.apgOutTime, 0)
 
 			logp.Debug(
 				"SchedulerHookCallback",
-				"non-apg=%d apg-in-active=%d apg-outside-active=%d",
+				"non-apg=%d invalid=%d apg-no-tag=%d apg-in-active=%d apg-outside-active=%d",
 				nonApg,
+				invalid,
+				noTag,
 				apgInTime,
 				apgOutTime,
 			)
@@ -128,215 +138,195 @@ func SaveBusCacheGoRoutine(done <-chan struct{}) {
 	}
 }
 
-// run in the background to save the scheduleCache to a file
+// SchedulerHookCallback parses a scheduler payload (single event object or array of events)
+// and updates the scheduleHotCache with any active apg bus routing. Used by both the
+// webhook server and the on-demand events api client.
+//
+// returns an error only when the payload is not valid JSON. valid JSON that holds no apg events,
+// or apg events that are not active, is silently skipped
 func SchedulerHookCallback(ctx context.Context, payload []byte) error {
-	var events []SchedulerAPGEvent
-
-	type TaskField struct {
-		Task string `json:"task"`
+	events, err := parseSchedulerEvents(payload)
+	if err != nil {
+		return err
 	}
 
-	switch jsonType := checkJSONType(payload); jsonType {
-	case "empty":
-		return fmt.Errorf("empty payload after trimming")
-
-	case "other (string, number, boolean, or invalid)":
-		return fmt.Errorf("invalid JSON payload type: %s", jsonType)
-
-	case "object":
-		// unmarshal the payload into a TaskField to check the task type
-		var tf TaskField
-		if err := json.Unmarshal(payload, &tf); err != nil {
-			return fmt.Errorf("failed to unmarshal object payload: %v", err)
-		}
-
-		// return without error if the task is not "apg"
-		if tf.Task != "apg" {
-			atomic.AddInt64(&schedulerEventCounters.nonApg, 1)
-			return nil
-		}
-
-		// if the task is "apg", proceed to unmarshal the payload into the events slice
-		var event SchedulerAPGEvent
-		if err := json.Unmarshal(payload, &event); err != nil {
-			return fmt.Errorf("failed to unmarshal object payload into SchedulerAPGEvent: %v", err)
-		}
-
-		events = append(events, event)
-
-	case "array":
-		// handle array of events
-		var arr []json.RawMessage
-		if err := json.Unmarshal(payload, &arr); err != nil {
-			return fmt.Errorf("failed to unmarshal array payload: %v", err)
-		}
-
-		for _, item := range arr {
-			// unmarshal the array element into a TaskField to check the task type before processing
-			var tf TaskField
-			if err := json.Unmarshal(item, &tf); err != nil {
-				return fmt.Errorf("failed to unmarshal array element into TaskField: %v", err)
-			}
-
-			// skip the array element if the task is not "apg"
-			if tf.Task != "apg" {
-				atomic.AddInt64(&schedulerEventCounters.nonApg, 1)
-				continue
-			}
-
-			// unmarshal the array element into a SchedulerAPGEvent since the task is "apg"
-			var event SchedulerAPGEvent
-			if err := json.Unmarshal(item, &event); err != nil {
-				return fmt.Errorf("failed to unmarshal array element into SchedulerAPGEvent: %v", err)
-			}
-
-			events = append(events, event)
-		}
-
-		if len(events) == 0 {
-			return nil
-		}
+	if len(events) == 0 {
+		return nil
 	}
 
-	// execute the cache update in a fire and forget go routine and return nil
-	go func() {
-		// holder for the bus routing map to update the hot cache incase of multiple events for different outputs
-		busRoutingMap := make(map[string]*insite.BusRouting)
+	updated := applySchedulerEvents(events, time.Now())
 
-		// iterate over each payload event, parse the start and end date and create bus routing objects to update the hot cache
-		for _, event := range events {
-			if event.Task != "apg" {
-				logp.Debug("SchedulerHookCallback", "skipping event %s with task %s", event.Output, event.Task)
-				continue
-			}
-
-			// parse the start and end date
-			startTime, err := time.Parse("2006/01/02 15:04:05", event.StartDate)
-			if err != nil {
-				logp.Err("failed to parse start date for event %s: %v", event.Output, err)
-				continue
-			}
-
-			endTime, err := time.Parse("2006/01/02 15:04:05", event.EndDate)
-			if err != nil {
-				logp.Err("failed to parse end date for event %s: %v", event.Output, err)
-				continue
-			}
-
-			now := time.Now()
-			isBetween := (now.After(startTime) || now.Equal(startTime)) && (now.Before(endTime) || now.Equal(endTime))
-
-			// check if the event is active now, if not skip it
-			// an event is active if the current time is between the start and end time
-			if !isBetween {
-				atomic.AddInt64(&schedulerEventCounters.apgOutTime, 1)
-				continue
-			}
-
-			atomic.AddInt64(&schedulerEventCounters.apgInTime, 1)
-
-			logp.Debug("SchedulerHookCallback", "event %s is active now", event.Output)
-
-			// create a bus routing object
-			br := &insite.BusRouting{
-				StartDate: &startTime,
-				EndDate:   &endTime,
-			}
-
-			// determine if the event is a primary or secondary bus routing based on the tags
-			if slices.Contains(event.Tags, "MAIN") {
-				br.Pri = event.Input
-			} else if slices.Contains(event.Tags, "BACKUP") {
-				br.Sec = event.Input
-			}
-
-			// update the bus routing map with the new bus routing
-			routing, ok := busRoutingMap[event.Output]
-			if !ok {
-				busRoutingMap[event.Output] = br
-				continue
-			}
-
-			// if the routing already exists, update the existing routing with the new bus routing
-			if br.Pri != "" {
-				routing.Pri = br.Pri
-			}
-			if br.Sec != "" {
-				routing.Sec = br.Sec
-			}
-
-			busRoutingMap[event.Output] = routing
-		}
-
-		// check to see if the busRoutingMap contains any entries before updating the hot cache
-		if len(busRoutingMap) == 0 {
-			return
-		}
-
-		// acquire a lock on the scheduleCache to ensure thread-safe updates
-		scheduleCache.Lock()
-		defer scheduleCache.Unlock()
-
-		// iterate over the bus routing map and update the hot cache
-		for output, routing := range busRoutingMap {
-			logp.Debug("SchedulerHookCallback", "updating hot cache for output: %s", output)
-
-			// if there's both a primary and secondary routing then replace the cache entirely
-			if routing.Pri != "" && routing.Sec != "" {
-				scheduleHotCache.Set(output, routing)
-				continue
-			}
-
-			// of there's only a primary or secondary routing, then get the cache item, check that it exists, and update the event times and routing accordingly
-			cachedRouting, ok := scheduleHotCache.Get(output)
-			if ok {
-				if routing.Pri != "" {
-					cachedRouting.Pri = routing.Pri
-				}
-				if routing.Sec != "" {
-					cachedRouting.Sec = routing.Sec
-				}
-				if routing.StartDate != nil {
-					cachedRouting.StartDate = routing.StartDate
-				}
-				if routing.EndDate != nil {
-					cachedRouting.EndDate = routing.EndDate
-				}
-
-				scheduleHotCache.Set(output, cachedRouting)
-			} else {
-				// if the cache item doesn't exist, add the new routing to the cache
-				scheduleHotCache.Set(output, routing)
-			}
-		}
-	}()
+	logp.Debug("SchedulerHookCallback", "received %d apg events, updated %d hot cache outputs", len(events), updated)
 
 	return nil
 }
 
-// cleanup the hot cache by removing any entries that are no longer active based on the current time every 24 hours
+// parseSchedulerEvents decodes a payload into apg events. Items that are not apg or fail to
+// decode are counted and skipped. Only an unparsable payload returns an error
+func parseSchedulerEvents(payload []byte) ([]SchedulerAPGEvent, error) {
+	var items []json.RawMessage
+
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("empty payload after trimming")
+	}
+
+	switch trimmed[0] {
+	case '{':
+		if !json.Valid(trimmed) {
+			return nil, fmt.Errorf("malformed JSON object payload")
+		}
+
+		items = []json.RawMessage{trimmed}
+
+	case '[':
+		// unmarshal validates the whole array
+		if err := json.Unmarshal(trimmed, &items); err != nil {
+			return nil, fmt.Errorf("malformed JSON array payload: %v", err)
+		}
+
+	default:
+		if !json.Valid(trimmed) {
+			return nil, fmt.Errorf("payload is not JSON")
+		}
+
+		// valid JSON that is not an event (string, number, boolean or null)
+		atomic.AddInt64(&schedulerEventCounters.nonApg, 1)
+		return nil, nil
+	}
+
+	events := make([]SchedulerAPGEvent, 0, len(items))
+
+	for _, item := range items {
+		// cheap pre-filter: discard items without an "apg" value before any json decoding
+		if !bytes.Contains(item, apgTaskBytes) {
+			atomic.AddInt64(&schedulerEventCounters.nonApg, 1)
+			continue
+		}
+
+		// decode only the task field to confirm the task type. other event shapes may not fit SchedulerAPGEvent
+		var task schedulerTask
+		if err := json.Unmarshal(item, &task); err != nil {
+			atomic.AddInt64(&schedulerEventCounters.invalid, 1)
+			continue
+		}
+
+		if task.Task != "apg" {
+			atomic.AddInt64(&schedulerEventCounters.nonApg, 1)
+			continue
+		}
+
+		var event SchedulerAPGEvent
+		if err := json.Unmarshal(item, &event); err != nil {
+			atomic.AddInt64(&schedulerEventCounters.invalid, 1)
+			logp.Debug("SchedulerHookCallback", "failed to unmarshal apg event: %v", err)
+			continue
+		}
+
+		events = append(events, event)
+	}
+
+	return events, nil
+}
+
+// applySchedulerEvents converts the events into bus routings active at now and merges them
+// into the scheduleHotCache. returns the number of outputs updated
+func applySchedulerEvents(events []SchedulerAPGEvent, now time.Time) int {
+	// holder for the bus routing map to fold multiple events for the same output
+	busRoutingMap := make(map[string]*insite.BusRouting)
+
+	for _, event := range events {
+		br, err := event.busRouting(now)
+		if err != nil {
+			switch {
+			case errors.Is(err, errEventInactive):
+				atomic.AddInt64(&schedulerEventCounters.apgOutTime, 1)
+			case errors.Is(err, errEventNoTag):
+				atomic.AddInt64(&schedulerEventCounters.noTag, 1)
+			default:
+				atomic.AddInt64(&schedulerEventCounters.invalid, 1)
+				logp.Err("skipping scheduler event %s: %v", event.Output, err)
+			}
+
+			continue
+		}
+
+		atomic.AddInt64(&schedulerEventCounters.apgInTime, 1)
+
+		logp.Debug("SchedulerHookCallback", "event %s is active now", event.Output)
+
+		busRoutingMap[event.Output] = mergeBusRouting(busRoutingMap[event.Output], br)
+	}
+
+	if len(busRoutingMap) == 0 {
+		return 0
+	}
+
+	// merge into the hot cache with exclusive access. values are replaced, never mutated in place,
+	// so readers holding a previous routing pointer are not affected
+	scheduleHotCache.Do(func(c *cache.CacheMap[string, *insite.BusRouting]) {
+		for output, routing := range busRoutingMap {
+			logp.Debug("SchedulerHookCallback", "updating hot cache for output: %s", output)
+
+			c.Store[output] = mergeBusRouting(c.Store[output], routing)
+		}
+	})
+
+	return len(busRoutingMap)
+}
+
+// mergeBusRouting returns a new routing with the incoming routing merged over the existing one.
+// if there's no existing routing or the schedule windows don't overlap, the incoming routing replaces it.
+// neither argument is modified
+func mergeBusRouting(existing, incoming *insite.BusRouting) *insite.BusRouting {
+	if existing == nil || !windowsOverlap(existing, incoming) {
+		merged := *incoming
+		return &merged
+	}
+
+	merged := *existing
+
+	if incoming.Pri != "" {
+		merged.Pri = incoming.Pri
+	}
+	if incoming.Sec != "" {
+		merged.Sec = incoming.Sec
+	}
+
+	merged.StartDate = incoming.StartDate
+	merged.EndDate = incoming.EndDate
+
+	return &merged
+}
+
+// windowsOverlap reports whether the start/end windows of two routings overlap
+func windowsOverlap(a, b *insite.BusRouting) bool {
+	if a.StartDate == nil || a.EndDate == nil || b.StartDate == nil || b.EndDate == nil {
+		return false
+	}
+
+	return !a.StartDate.After(*b.EndDate) && !b.StartDate.After(*a.EndDate)
+}
+
+// isActive reports whether t is between start and end (inclusive). nil bounds are never active
+func isActive(t time.Time, start, end *time.Time) bool {
+	if start == nil || end == nil {
+		return false
+	}
+
+	return !t.Before(*start) && !t.After(*end)
+}
+
+// cleanup the hot cache by removing any entries that are no longer active based on the current time every HOTCACHE_CLEANUP_PERIOD
 func CleanupScheduleHotCache(done <-chan struct{}) {
-	ticker := time.NewTicker(24 * time.Hour)
+	ticker := time.NewTicker(HOTCACHE_CLEANUP_PERIOD)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			now := time.Now()
-
-			keysToDelete := make([]string, 0)
-
-			scheduleHotCache.Do(func(c *cache.CacheMap[string, *insite.BusRouting]) {
-				for key, routing := range c.Store {
-					if routing.EndDate != nil && now.After(*routing.EndDate) {
-						keysToDelete = append(keysToDelete, key)
-					}
-				}
-			})
-
-			for _, key := range keysToDelete {
-				logp.Debug("CleanupScheduleHotCache", "removing inactive hot cache entry for output: %s", key)
-				scheduleHotCache.Delete(key)
+			if removed := PruneScheduleHotCache(time.Now()); removed > 0 {
+				logp.Debug("CleanupScheduleHotCache", "removed %d expired hot cache entries", removed)
 			}
 		case <-done:
 			logp.Warn("exiting hot cache cleanup routine")
@@ -345,28 +335,49 @@ func CleanupScheduleHotCache(done <-chan struct{}) {
 	}
 }
 
+// PruneScheduleHotCache removes hot cache entries that have expired at now, or have no start/end date
+// and can never be active. returns the number of entries removed
+func PruneScheduleHotCache(now time.Time) int {
+	var removed int
+
+	// delete under the same lock as the scan so a fresh entry written in between is never removed
+	scheduleHotCache.Do(func(c *cache.CacheMap[string, *insite.BusRouting]) {
+		for key, routing := range c.Store {
+			if routing == nil || routing.StartDate == nil || routing.EndDate == nil || now.After(*routing.EndDate) {
+				logp.Debug("CleanupScheduleHotCache", "removing expired hot cache entry for output: %s", key)
+				delete(c.Store, key)
+				removed++
+			}
+		}
+	})
+
+	return removed
+}
+
 // GetHotRoute retrieves the bus routing for a given destination from the hot cache if it is active based on the current time.
 func GetScheduleHotRoute(destination string, t time.Time) (*insite.BusRouting, bool) {
 	routing, ok := scheduleHotCache.Get(destination)
-	if !ok || routing.StartDate == nil || routing.EndDate == nil {
+	if !ok || routing == nil || !isActive(t, routing.StartDate, routing.EndDate) {
 		return nil, false
 	}
 
-	isBetween := (t.After(*routing.StartDate) || t.Equal(*routing.StartDate)) && (t.Before(*routing.EndDate) || t.Equal(*routing.EndDate))
-	if isBetween {
-		return routing, true
-	}
-
-	return nil, false
+	return routing, true
 }
 
 // GetBusRoutingFromCaches retrieves the bus routing for a given destination from the hot cache or the main cache.
-func GetBusRoutingFromCaches(destination string, evalEndDate bool) (*insite.BusRouting, bool) {
+// the hot cache is only consulted when useHot is true. returns which cache supplied the routing
+func GetBusRoutingFromCaches(destination string, evalEndDate, useHot bool) (*insite.BusRouting, RoutingSource, bool) {
 	var routing *insite.BusRouting
 
 	now := time.Now()
 
-	// first check the main cache for the routing
+	// check if there's a hot route, the hot route takes precedence over the main cache
+	if useHot {
+		if r, ok := GetScheduleHotRoute(destination, now); ok {
+			return r, SourceHotCache, true
+		}
+	}
+
 	routings, _ := scheduleCache.Get(destination)
 
 	// select the routing based if where now is between the routing.StartDate and routing.EndDate
@@ -376,24 +387,15 @@ func GetBusRoutingFromCaches(destination string, evalEndDate bool) (*insite.BusR
 		}
 
 		// if we are not validating end dates just take the first routing in the list and return it
-		if !evalEndDate {
-			routing = r
-			return routing, true
-		}
-
-		if r.StartDate == nil || r.EndDate == nil {
-			continue
-		}
-		if (now.After(*r.StartDate) || now.Equal(*r.StartDate)) && (now.Before(*r.EndDate) || now.Equal(*r.EndDate)) {
+		if !evalEndDate || isActive(now, r.StartDate, r.EndDate) {
 			routing = r
 			break
 		}
 	}
 
-	// check if there's a hot route, if no hot route, return the routing from the cache, otherwise return the hot route
-	if r, ok := GetScheduleHotRoute(destination, now); ok {
-		return r, true
+	if routing == nil {
+		return nil, SourceNone, false
 	}
 
-	return routing, routing != nil
+	return routing, SourceCache, true
 }

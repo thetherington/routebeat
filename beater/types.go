@@ -56,6 +56,25 @@ func (rs RoutingState) String() string {
 	return routingName[rs]
 }
 
+// RoutingSource is a small enum for which cache supplied the schedule routing
+type RoutingSource int
+
+const (
+	SourceNone     RoutingSource = iota
+	SourceCache                  // scheduleCache (elasticsearch poll)
+	SourceHotCache               // scheduleHotCache (webhook / events api)
+)
+
+var routingSourceName = map[RoutingSource]string{
+	SourceNone:     "none",
+	SourceCache:    "cache",
+	SourceHotCache: "hotcache",
+}
+
+func (rs RoutingSource) String() string {
+	return routingSourceName[rs]
+}
+
 // Summary struct
 type Counters struct {
 	Tag     string

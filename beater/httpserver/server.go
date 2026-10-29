@@ -15,6 +15,8 @@ import (
 
 // CallbackFunc is executed with the raw request payload bytes.
 // It should contain parsing and business processing logic.
+// Returning an error rejects the payload with 400 Bad Request, so it should only
+// return an error for payloads that can't be parsed (e.g. invalid JSON).
 type CallbackFunc func(ctx context.Context, payload []byte) error
 
 const schedulerEventsPath = "/api/v1/scheduler/events"
@@ -131,7 +133,9 @@ func (s *Server) handleSchedulerEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.callback(r.Context(), payload); err != nil {
-		logp.Err("scheduler event callback failed: %v", err)
+		logp.Warn("scheduler event payload rejected: %v", err)
+		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid payload: %v", err)})
+		return
 	}
 
 	WriteJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})

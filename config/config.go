@@ -65,6 +65,18 @@ type NotifierAuto struct {
 	NotifierTypes []string `config:"types"`
 }
 
+type Webhook struct {
+	Enabled bool          `config:"enabled"`
+	Port    int           `config:"port"`
+	Wait    time.Duration `config:"wait"` // time an unscheduled state waits for webhook data
+}
+
+type EventsAPI struct {
+	Url     string            `config:"url"` // empty url disables the events api
+	Timeout time.Duration     `config:"timeout"`
+	Headers map[string]string `config:"headers"`
+}
+
 type Config struct {
 	Period    time.Duration `config:"period"`
 	Tags      []string      `config:"tags"`
@@ -74,6 +86,8 @@ type Config struct {
 	Notifiers Notifier      `config:"notifiers"`
 	TDA       string        `config:"tda"`
 	Zorro     string        `config:"zorro"`
+	Webhook   Webhook       `config:"webhook"`
+	EventsAPI EventsAPI     `config:"events_api"`
 }
 
 var DefaultConfig = Config{
@@ -109,5 +123,13 @@ var DefaultConfig = Config{
 			Password:      "admin",
 			NotifierTypes: []string{"notification-elastic"},
 		},
+	},
+	Webhook: Webhook{
+		Enabled: true,
+		Port:    8082,
+		Wait:    5 * time.Second,
+	},
+	EventsAPI: EventsAPI{
+		Timeout: 3 * time.Second,
 	},
 }

@@ -1,7 +1,6 @@
 package beater
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -74,21 +73,4 @@ func ConvertSliceJSON[S any, D any](src []S) ([]D, error) {
 	}
 
 	return dst, nil
-}
-
-func checkJSONType(data []byte) string {
-	// Strip leading whitespace (spaces, tabs, newlines)
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) == 0 {
-		return "empty"
-	}
-
-	switch trimmed[0] {
-	case '{':
-		return "object"
-	case '[':
-		return "array"
-	default:
-		return "other (string, number, boolean, or invalid)"
-	}
 }

@@ -15940,6 +15940,18 @@ required: False
 
 --
 
+*`schedule.routingSource`*::
++
+--
+Cache that supplied the schedule routing: cache (elasticsearch poll), hotcache (webhook / events api), none (unmatched)
+
+
+type: keyword
+
+required: False
+
+--
+
 *`schedule.deviationStartTime`*::
 +
 --

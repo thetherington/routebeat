@@ -1,0 +1,1213 @@
+{
+  "cases": [
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.391Z",
+        "destinationLabel": "PMCCHR",
+        "dstId": "bb9809ff-f277-59b5-9131-f26b40312c69",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37193",
+        "dstNameset": {
+          "broadview": "PMCCHR",
+          "eng": "DSTSUB_IAD_WEB 182",
+          "eng-1": "DSTSUB_IPAN - 182"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "iad1bc-zaply42-AUD-SRC-4"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-92212",
+            "nameset": {
+              "broadview": "DCZA042D",
+              "eng": "SRCSUB_DCZA042D"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "ATZA042D",
+          "buscode": "PMCCHR",
+          "deviationStartTime": "-",
+          "matched": true,
+          "primary": "DCZA042D",
+          "status": "Primary"
+        },
+        "sourceLabel": "DCZA042D"
+      },
+      "expect": "Primary",
+      "name": "Primary PMCCHR"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.391Z",
+        "destinationLabel": "PMHSF1",
+        "dstId": "f04927d7-9e0d-5e83-9668-1dfa8fe903af",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37114",
+        "dstNameset": {
+          "broadview": "PMHSF1",
+          "eng": "DSTSUB_IAD_WEB 103",
+          "eng-1": "DSTSUB_IPAN - 103"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "iad1bc-zaply31-AUD-SRC-8"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-74642",
+            "nameset": {
+              "broadview": "PMBKPB",
+              "eng": "SRCSUB_IAD_Barker4"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "",
+          "buscode": "PMHSF1",
+          "deviationStartTime": "-",
+          "matched": true,
+          "primary": "PMBKPB",
+          "status": "Primary"
+        },
+        "sourceLabel": "PMBKPB"
+      },
+      "expect": "Primary",
+      "name": "Primary PMHSF1"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.390Z",
+        "destinationLabel": "PMLAF2",
+        "dstId": "998eeb96-97a9-5a91-abdb-9c51dc12d3a9",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37083",
+        "dstNameset": {
+          "broadview": "PMLAF2",
+          "eng": "DSTSUB_IAD_WEB 072",
+          "eng-1": "DSTSUB_IPAN - 072"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "iad1bc-zaply36-AUD-SRC-7"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-92119",
+            "nameset": {
+              "broadview": "DCZA036G",
+              "eng": "SRCSUB_DCZA036G"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "DCZB036G",
+          "buscode": "PMLAF2",
+          "deviationStartTime": "-",
+          "matched": true,
+          "primary": "DCZA036G",
+          "status": "Primary"
+        },
+        "sourceLabel": "DCZA036G"
+      },
+      "expect": "Primary",
+      "name": "Primary PMLAF2"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.391Z",
+        "destinationLabel": "PMNDAL",
+        "dstId": "22da9957-9ae5-520e-b927-13193b1632b5",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37322",
+        "dstNameset": {
+          "broadview": "PMNDAL",
+          "eng": "DSTSUB_IAD_WEB 311",
+          "eng-1": "DSTSUB_IPAN - 311"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "Scheduler: SRPP07",
+          "Scheduler: XMSP40",
+          "IPAN",
+          "DESTINATION",
+          "Scheduler: EXTERNAL",
+          "SOURCE"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "iad1bc-zaply31-AUD-SRC-8"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-74642",
+            "nameset": {
+              "broadview": "PMBKPB",
+              "eng": "SRCSUB_IAD_Barker4"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "",
+          "buscode": "PMNDAL",
+          "deviationStartTime": "-",
+          "matched": true,
+          "primary": "PMBKPB",
+          "status": "Primary"
+        },
+        "sourceLabel": "PMBKPB"
+      },
+      "expect": "Primary",
+      "name": "Primary PMNDAL"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.391Z",
+        "destinationLabel": "PMNTOR",
+        "dstId": "2033f0e2-17cd-5063-a067-6b73efcdbf39",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37343",
+        "dstNameset": {
+          "broadview": "PMNTOR",
+          "eng": "DSTSUB_IAD_WEB 332",
+          "eng-1": "DSTSUB_IPAN - 332"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "iad1bc-zaply31-AUD-SRC-8"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-74642",
+            "nameset": {
+              "broadview": "PMBKPB",
+              "eng": "SRCSUB_IAD_Barker4"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "",
+          "buscode": "PMNTOR",
+          "deviationStartTime": "-",
+          "matched": true,
+          "primary": "PMBKPB",
+          "status": "Primary"
+        },
+        "sourceLabel": "PMBKPB"
+      },
+      "expect": "Primary",
+      "name": "Primary PMNTOR"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.392Z",
+        "destinationLabel": "PMNWAJ",
+        "dstId": "38122388-7882-564a-b528-7f00d2806fc5",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37523",
+        "dstNameset": {
+          "broadview": "PMNWAJ",
+          "eng": "DSTSUB_IAD_WEB 512",
+          "eng-1": "DSTSUB_IPAN - 512"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "WDC-AGW-127-B_SDI03x05-AUD-SRC-1"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-69728",
+            "nameset": {
+              "broadview": "REM86D",
+              "dc legacy id": "REM86D",
+              "dc service name": "Al Jazeera Secondary",
+              "eng": "SRCSUB_WDC_AGW_127-B_03_01"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "REM86D",
+          "buscode": "PMNWAJ",
+          "deviationStartTime": "2025-10-15T17:27:06Z",
+          "matched": true,
+          "primary": "AESIN212",
+          "status": "Backup"
+        },
+        "sourceLabel": "REM86D"
+      },
+      "expect": "Backup",
+      "name": "Backup PMNWAJ"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.391Z",
+        "destinationLabel": "PMQE08",
+        "dstId": "fc1e506d-7b65-5146-8316-82d6e448c358",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37149",
+        "dstNameset": {
+          "broadview": "PMQE08",
+          "eng": "DSTSUB_IAD_WEB 138",
+          "eng-1": "DSTSUB_IPAN - 138"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION",
+          "Scheduler: Active"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "WDC-AGW-125-D_AES03x05-AUD-SRC-5"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-69495",
+            "nameset": {
+              "broadview": "REM351",
+              "dc legacy id": "REM351",
+              "dc service name": "SLAM Radio Secondary",
+              "eng": "SRCSUB_WDC_AGW_125-D_03_05"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "REM351",
+          "buscode": "PMQE08",
+          "deviationStartTime": "2025-10-15T17:27:06Z",
+          "matched": true,
+          "primary": "AESIN181",
+          "status": "Backup"
+        },
+        "sourceLabel": "REM351"
+      },
+      "expect": "Backup",
+      "name": "Backup PMQE08"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-07-16T16:32:17.585Z",
+        "destinationLabel": "BSTRJA",
+        "dstId": "55f5b189-5c88-5c1a-aea2-6c094fd40aa8",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37145",
+        "dstNameset": {
+          "broadview": "BSTRJA",
+          "eng": "DSTSUB_IAD_WEB 134",
+          "eng-1": "DSTSUB_IPAN - 134"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "atl-slab001-AUD-SRC-5"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-38952",
+            "nameset": {
+              "broadview": "ATZA001E",
+              "eng": "SRCSUB_ATL ZETTA 01_05"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "ATZA001E",
+          "buscode": "BSTRJA",
+          "deviationStartTime": "2026-07-16T16:30:36Z",
+          "matched": true,
+          "primary": "DCZA001E",
+          "status": "Backup"
+        },
+        "sourceLabel": "ATZA001E"
+      },
+      "expect": "Backup",
+      "name": "Backup BSTRJA"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T16:08:15.010Z",
+        "destinationLabel": "PMFRKN",
+        "dstId": "b88f03ee-78bd-517d-9a63-820c10e8f751",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37492",
+        "dstNameset": {
+          "broadview": "PMFRKN",
+          "eng": "DSTSUB_IAD_WEB 481",
+          "eng-1": "DSTSUB_IPAN - 481"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "atl-slab019-AUD-SRC-24"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-39628",
+            "nameset": {
+              "broadview": "DCZB038H",
+              "eng": "SRCSUB_ATL ZETTA 38_08"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "DCZB038H",
+          "buscode": "PMFRKN",
+          "deviationStartTime": "2026-08-06T16:07:40Z",
+          "matched": true,
+          "primary": "DCZA038H",
+          "status": "Backup"
+        },
+        "sourceLabel": "DCZB038H"
+      },
+      "expect": "Backup",
+      "name": "Backup PMFRKN"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-07-31T13:43:41.991Z",
+        "destinationLabel": "BSITAL",
+        "dstId": "af2925a1-a72f-5355-a5d5-c3ec7f5de929",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37107",
+        "dstNameset": {
+          "broadview": "BSITAL",
+          "eng": "DSTSUB_IAD_WEB 096",
+          "eng-1": "DSTSUB_IPAN - 096"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION",
+          "Scheduler: Active",
+          "DEREK"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "atl-slab001-AUD-SRC-4"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-38951",
+            "nameset": {
+              "broadview": "ATZA001D",
+              "eng": "SRCSUB_ATL ZETTA 01_04"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "ATZA001D",
+          "buscode": "BSITAL",
+          "deviationStartTime": "2026-07-31T13:43:18Z",
+          "matched": true,
+          "primary": "DCZA001D",
+          "status": "Backup"
+        },
+        "sourceLabel": "ATZA001D"
+      },
+      "expect": "Backup",
+      "name": "Backup BSITAL"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.390Z",
+        "destinationLabel": "PMAL2K",
+        "dstId": "470c69aa-091b-5989-8a1f-cec23fe20ec7",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37101",
+        "dstNameset": {
+          "broadview": "PMAL2K",
+          "eng": "DSTSUB_IAD_WEB 090",
+          "eng-1": "DSTSUB_IPAN - 090"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "atl-slab026-AUD-SRC-4"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-67070",
+            "nameset": {
+              "broadview": "LOOPBLUE",
+              "eng": "SRCSUB_ATL ZORRO 4_12"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "ATZA012M",
+          "buscode": "PMAL2K",
+          "deviationStartTime": "2026-05-25T01:43:58Z",
+          "matched": true,
+          "primary": "DCZA012M",
+          "status": "Zorro"
+        },
+        "sourceLabel": "LOOPBLUE"
+      },
+      "expect": "Zorro",
+      "name": "Zorro PMAL2K"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.391Z",
+        "destinationLabel": "PMBBOS",
+        "dstId": "c25e2062-c991-5448-91f4-1cc878d17b1d",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37203",
+        "dstNameset": {
+          "broadview": "PMBBOS",
+          "eng": "DSTSUB_IAD_WEB 192",
+          "eng-1": "DSTSUB_IPAN - 192"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "Scheduler: Active",
+          "DESTINATION",
+          "IPAN",
+          "Scheduler: XMSP12"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "atl-slab026-AUD-SRC-15"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-67081",
+            "nameset": {
+              "broadview": "LOOP8500",
+              "eng": "SRCSUB_ATL ZORRO 4_23"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "",
+          "buscode": "PMBBOS",
+          "deviationStartTime": "2026-05-25T01:43:58Z",
+          "matched": true,
+          "primary": "PMBKML",
+          "status": "Zorro"
+        },
+        "sourceLabel": "LOOP8500"
+      },
+      "expect": "Zorro",
+      "name": "Zorro PMBBOS"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.391Z",
+        "destinationLabel": "PMBMIN",
+        "dstId": "d26f0c41-84bf-57f3-b39b-ca7bed863ed1",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37216",
+        "dstNameset": {
+          "broadview": "PMBMIN",
+          "eng": "DSTSUB_IAD_WEB 205",
+          "eng-1": "DSTSUB_IPAN - 205"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION",
+          "Scheduler: Active",
+          "Scheduler: PMBBAL"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "atl-slab026-AUD-SRC-11"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-67077",
+            "nameset": {
+              "broadview": "LOOP80TP",
+              "eng": "SRCSUB_ATL ZORRO 4_19"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "",
+          "buscode": "PMBMIN",
+          "deviationStartTime": "2026-05-25T01:43:58Z",
+          "matched": true,
+          "primary": "PMBKML",
+          "status": "Zorro"
+        },
+        "sourceLabel": "LOOP80TP"
+      },
+      "expect": "Zorro",
+      "name": "Zorro PMBMIN"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.391Z",
+        "destinationLabel": "PMBTEX",
+        "dstId": "01cc9e03-372a-5195-b738-91f23032eb2d",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37279",
+        "dstNameset": {
+          "broadview": "PMBTEX",
+          "eng": "DSTSUB_IAD_WEB 268",
+          "eng-1": "DSTSUB_IPAN - 268"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION",
+          "Scheduler: Active"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "atl-slab027-AUD-SRC-20"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-67118",
+            "nameset": {
+              "broadview": "LOOP90RB",
+              "eng": "SRCSUB_ATL ZORRO 6_12"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "",
+          "buscode": "PMBTEX",
+          "deviationStartTime": "2026-05-25T01:43:58Z",
+          "matched": true,
+          "primary": "PMBKML",
+          "status": "Zorro"
+        },
+        "sourceLabel": "LOOP90RB"
+      },
+      "expect": "Zorro",
+      "name": "Zorro PMBTEX"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.392Z",
+        "destinationLabel": "PMCGRT",
+        "dstId": "cd963479-edb4-5b25-907b-5dd64485b6d7",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37518",
+        "dstNameset": {
+          "broadview": "PMCGRT",
+          "eng": "DSTSUB_IAD_WEB 507",
+          "eng-1": "DSTSUB_IPAN - 507"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "atl-slab026-AUD-SRC-4"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-67070",
+            "nameset": {
+              "broadview": "LOOPBLUE",
+              "eng": "SRCSUB_ATL ZORRO 4_12"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "ATZA016B",
+          "buscode": "PMCGRT",
+          "deviationStartTime": "2026-05-25T01:43:58Z",
+          "matched": true,
+          "primary": "DCZA016B",
+          "status": "Zorro"
+        },
+        "sourceLabel": "LOOPBLUE"
+      },
+      "expect": "Zorro",
+      "name": "Zorro PMCGRT"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-06-10T20:51:41.390Z",
+        "destinationLabel": "PMACRK",
+        "dstId": "2b18f510-aab9-5bb4-af4d-ebfc9ab128fc",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37045",
+        "dstNameset": {
+          "broadview": "PMACRK",
+          "eng": "DSTSUB_IAD_WEB 034",
+          "eng-1": "DSTSUB_IPAN - 034"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "DESTINATION",
+          "IPAN"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "iad1bc-zaply01-AUD-SRC-4"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-37107",
+            "nameset": {
+              "broadview": "BSITAL",
+              "eng": "DSTSUB_IAD_WEB 096",
+              "eng-1": "DSTSUB_IPAN - 096"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "ATXA013F",
+          "buscode": "PMACRK",
+          "deviationStartTime": "2026-05-25T01:29:57Z",
+          "matched": true,
+          "primary": "DCXA013F",
+          "status": "TDA"
+        },
+        "sourceLabel": "BSITAL"
+      },
+      "expect": "TDA",
+      "name": "TDA PMACRK"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.392Z",
+        "destinationLabel": "BS90NW",
+        "dstId": "37185da5-8901-5865-9471-3c3d1b2135f5",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37489",
+        "dstNameset": {
+          "broadview": "BS90NW",
+          "eng": "DSTSUB_IAD_WEB 478",
+          "eng-1": "DSTSUB_IPAN - 478"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION",
+          "Scheduler: Active"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "iad1bc-zaply10-AUD-SRC-12"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-91708",
+            "nameset": {
+              "broadview": "DCXA010M",
+              "eng": "SRCSUB_DCZA010M",
+              "eng-1": "SRCSUB_DCZA156"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "ATZA002M",
+          "buscode": "BS90NW",
+          "deviationStartTime": "2026-05-25T01:29:57Z",
+          "matched": true,
+          "primary": "DCZA002M",
+          "status": "UnscheduledAudio"
+        },
+        "sourceLabel": "DCXA010M"
+      },
+      "expect": "UnscheduledAudio",
+      "name": "UnscheduledAudio BS90NW"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.392Z",
+        "destinationLabel": "PM90TP",
+        "dstId": "67dc8ef0-6267-5a77-9703-210f9c9ca7ea",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37498",
+        "dstNameset": {
+          "broadview": "PM90TP",
+          "eng": "DSTSUB_IAD_WEB 487",
+          "eng-1": "DSTSUB_IPAN - 487"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION",
+          "Scheduler: Active"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "WDC-AGW-125-C_AES07x09-AUD-SRC-7"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-91609",
+            "nameset": {
+              "broadview": "DCXA004J",
+              "eng": "SRCSUB_DCZA004J",
+              "eng-1": "SRCSUB_DCZA57"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "ATZA009L",
+          "buscode": "PM90TP",
+          "deviationStartTime": "2026-05-25T01:29:57Z",
+          "matched": true,
+          "primary": "DCZA009L",
+          "status": "UnscheduledAudio"
+        },
+        "sourceLabel": "DCXA004J"
+      },
+      "expect": "UnscheduledAudio",
+      "name": "UnscheduledAudio PM90TP"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.391Z",
+        "destinationLabel": "PMBLAD",
+        "dstId": "afb9c1d8-dffa-51bb-8f10-37cd527bbd4f",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37213",
+        "dstNameset": {
+          "broadview": "PMBLAD",
+          "eng": "DSTSUB_IAD_WEB 202",
+          "eng-1": "DSTSUB_IPAN - 202"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION",
+          "Scheduler: Active"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "iad1bc-zaply08-AUD-SRC-2"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-91666",
+            "nameset": {
+              "broadview": "DCXA008B",
+              "eng": "SRCSUB_DCZA008B",
+              "eng-1": "SRCSUB_DCZA114"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "",
+          "buscode": "PMBLAD",
+          "deviationStartTime": "2026-05-25T01:29:57Z",
+          "matched": true,
+          "primary": "PMBKML",
+          "status": "UnscheduledAudio"
+        },
+        "sourceLabel": "DCXA008B"
+      },
+      "expect": "UnscheduledAudio",
+      "name": "UnscheduledAudio PMBLAD"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.391Z",
+        "destinationLabel": "PMBSTL",
+        "dstId": "1a5aaf3d-169a-5600-a945-d0d652b0af69",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37277",
+        "dstNameset": {
+          "broadview": "PMBSTL",
+          "eng": "DSTSUB_IAD_WEB 266",
+          "eng-1": "DSTSUB_IPAN - 266"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "iad1bc-zaply04-AUD-SRC-12"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-91612",
+            "nameset": {
+              "broadview": "DCXA004M",
+              "eng": "SRCSUB_DCZA004M",
+              "eng-1": "SRCSUB_DCZA60"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "",
+          "buscode": "PMBSTL",
+          "deviationStartTime": "2025-10-14T14:52:45Z",
+          "matched": true,
+          "primary": "PMBKML",
+          "status": "UnscheduledAudio"
+        },
+        "sourceLabel": "DCXA004M"
+      },
+      "expect": "UnscheduledAudio",
+      "name": "UnscheduledAudio PMBSTL"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:10:15.392Z",
+        "destinationLabel": "PMCAN6",
+        "dstId": "13f69ed1-31ec-5829-946c-8ecde1e09082",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37396",
+        "dstNameset": {
+          "broadview": "PMCAN6",
+          "eng": "DSTSUB_IAD_WEB 385",
+          "eng-1": "DSTSUB_IPAN - 385"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "DESTINATION",
+          "IPAN",
+          "SOURCE"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "WDC-AGW-125-E_AES11x13-AUD-SRC-3"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-69577",
+            "nameset": {
+              "broadview": "IPWDNW",
+              "dc legacy id": "AES IN 086",
+              "dc service name": "CBC Radio One Primary",
+              "eng": "SRCSUB_WDC_AGW_125-E_11_03"
+            }
+          }
+        },
+        "schedule": {
+          "backup": "SATCAN6",
+          "buscode": "PMCAN6",
+          "deviationStartTime": "2025-10-14T14:52:45Z",
+          "matched": true,
+          "primary": "IPCAN6",
+          "status": "UnscheduledAudio"
+        },
+        "sourceLabel": "IPWDNW"
+      },
+      "expect": "UnscheduledAudio",
+      "name": "UnscheduledAudio PMCAN6"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:32:18.740Z",
+        "destinationLabel": "PMCANB",
+        "dstId": "a9ec6d7f-ddbf-5ddb-b83c-f6e58924409b",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37125",
+        "dstNameset": {
+          "broadview": "PMCANB",
+          "eng": "DSTSUB_IAD_WEB 114",
+          "eng-1": "DSTSUB_IPAN - 114"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "SOURCE",
+          "IPAN",
+          "DESTINATION"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "WDC-AGW-124-A_AES08x10-AUD-SRC-5"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-69738",
+            "nameset": {
+              "broadview": "AES IN 004",
+              "dc legacy id": "AES IN 004",
+              "dc service name": "CBS LiveU OUT 1",
+              "eng": "SRCSUB_WDC_AGW_127-B_07_09"
+            }
+          }
+        },
+        "schedule": {
+          "matched": false
+        },
+        "sourceLabel": "AES IN 004"
+      },
+      "expect": "not_found",
+      "name": "label with spaces 'AES IN 004'"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-08-06T17:32:18.892Z",
+        "destinationLabel": "",
+        "dstId": "872cf938-0bdf-56e7-b207-2b4814896140",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-36667",
+        "dstNameset": {
+          "eng": "DSTSUB_MES_VIRTUAL 026"
+        },
+        "dstTag": "MES",
+        "dstTags": [
+          "DESTINATION",
+          "MES",
+          "SOURCE"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "iad1bc-slab001-AUD-SRC-26"
+          },
+          "subscribedSource": {
+            "isSub": true,
+            "name": "SUB-29622",
+            "nameset": {
+              "broadview": "XMPROG TX",
+              "eng": "SRCSUB_IAD_MES 026",
+              "eng-1": "SRCSUB_MES 026"
+            }
+          }
+        },
+        "schedule": {
+          "matched": false
+        },
+        "sourceLabel": "XMPROG TX"
+      },
+      "expect": "not_found",
+      "name": "label with spaces 'XMPROG TX'"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-05-25T01:47:58.328Z",
+        "destinationLabel": "PMNBOS",
+        "dstId": "4e0c410a-2699-5468-b168-239ba85c4e4b",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37318",
+        "dstNameset": {
+          "broadview": "PMNBOS",
+          "eng": "DSTSUB_IAD_WEB 307",
+          "eng-1": "DSTSUB_IPAN - 307"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "IPAN",
+          "DESTINATION",
+          "Scheduler: EXTERNAL",
+          "SOURCE",
+          "Scheduler: XMSP37",
+          "Scheduler: Active"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "iad1bc-zaply28-AUD-SRC-10"
+          }
+        },
+        "schedule": {
+          "backup": "",
+          "buscode": "PMNBOS",
+          "deviationStartTime": "2026-05-25T01:29:57Z",
+          "matched": true,
+          "primary": "PMBKPB",
+          "status": "Backup"
+        },
+        "sourceLabel": ""
+      },
+      "expect": "unknown",
+      "name": "blank source recorded as Backup by an older build PMNBOS",
+      "note": "the older build matched a blank source to a blank backup label; a blank source is now reported as unknown"
+    },
+    {
+      "doc": {
+        "@timestamp": "2026-05-25T01:47:58.328Z",
+        "destinationLabel": "PMNCHA",
+        "dstId": "bdc96f57-7215-587d-9efc-66ccc043d25a",
+        "dstIsDst": true,
+        "dstIsSub": true,
+        "dstName": "SUB-37319",
+        "dstNameset": {
+          "broadview": "PMNCHA",
+          "eng": "DSTSUB_IAD_WEB 308",
+          "eng-1": "DSTSUB_IPAN - 308"
+        },
+        "dstTag": "IPAN",
+        "dstTags": [
+          "Scheduler: SRPP03",
+          "IPAN",
+          "DESTINATION",
+          "Scheduler: EXTERNAL",
+          "SOURCE",
+          "Scheduler: XMSP36",
+          "Scheduler: Active"
+        ],
+        "dstType": "sub",
+        "eventType": "query",
+        "routeableTerminal": {
+          "physicalSource": {
+            "isSrc": true,
+            "name": "iad1bc-zaply28-AUD-SRC-11"
+          }
+        },
+        "schedule": {
+          "backup": "",
+          "buscode": "PMNCHA",
+          "deviationStartTime": "2026-05-25T01:29:57Z",
+          "matched": true,
+          "primary": "PMBKPB",
+          "status": "Backup"
+        },
+        "sourceLabel": ""
+      },
+      "expect": "unknown",
+      "name": "blank source recorded as Backup by an older build PMNCHA",
+      "note": "the older build matched a blank source to a blank backup label; a blank source is now reported as unknown"
+    }
+  ],
+  "source": "http://10.9.0.69:9200/routebeat-8.18.0"
+}
