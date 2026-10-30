@@ -60,6 +60,42 @@ func TestEventsAPIRefreshUpdatesHotCache(t *testing.T) {
 	}
 }
 
+// a response for one output can carry events for other outputs, all of them are merged into the hot cache
+func TestEventsAPIRefreshUpdatesMultipleOutputs(t *testing.T) {
+	resetCaches()
+	start, end := activeWindow()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("[" +
+			apgEventJSON("BUS1", "A1", "MAIN", start, end) + "," +
+			apgEventJSON("BUS2", "B1", "MAIN", start, end) + "," +
+			apgEventJSON("BUS1", "A2", "BACKUP", start, end) + "," +
+			apgEventJSON("BUS3", "C2", "BACKUP", start, end) + "]"))
+	}))
+	defer srv.Close()
+
+	// an existing BUS2 entry with an overlapping window keeps its backup
+	now := time.Now().UTC()
+	scheduleHotCache.Set("BUS2", routing("", "OLD_SEC", now.Add(-time.Hour), now.Add(time.Hour)))
+
+	if err := newTestEventsAPI(t, srv.URL).Refresh(context.Background(), "BUS1"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]struct{ pri, sec string }{
+		"BUS1": {"A1", "A2"},      // requested output, MAIN and BACKUP are not adjacent in the list
+		"BUS2": {"B1", "OLD_SEC"}, // other output merged with the existing entry
+		"BUS3": {"", "C2"},        // other output with only a BACKUP event
+	}
+
+	for output, w := range want {
+		r, ok := GetScheduleHotRoute(output, time.Now())
+		if !ok || r.Pri != w.pri || r.Sec != w.sec {
+			t.Errorf("%s = %+v %t, want pri=%q sec=%q", output, r, ok, w.pri, w.sec)
+		}
+	}
+}
+
 func TestMatchScheduledState(t *testing.T) {
 	tests := []struct {
 		name     string

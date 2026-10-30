@@ -20,11 +20,11 @@ routebeat:
   tda: "tda"
 
   # Tag for the Zorro sources.
-  zorro: "zorrow"
+  zorro: "ZORRO"
 
   # Magnum API
   api:
-    url: "https://172.16.234.166/graphql/v1.1"
+    url: "https://129.213.88.5/graphql/v1.1"
     
     # Get route notifications via the subscriptions
     notifications: true
@@ -33,21 +33,23 @@ routebeat:
     limit: 2000
 
     # Serialize GraphQL polling queries across tags to reduce API load
-    serialize_queries: true
+    serialize_queries: false
 
     # Magnum OIDC Authentication
     auth:
-      client_id: "magnum-analytics"
-      client_secret: "clA66khJ7p9Inw2CumDhx66YIvhcgdJc"
-      token_url: "https://172.16.234.166/auth/realms/magnum/protocol/openid-connect/token"
-
+      client_id: "insite-poller"
+      client_secret: "gpJ2WSbjBOD1HoZxpTYGaqKdqeBD1mll"
+      token_url: "https://129.213.88.5/auth/realms/magnum/protocol/openid-connect/token"
 
     # Defines how long to wait for the API to respond before timing out
     timeout: 10s
 
+    # Defines the idle duration after which the subscription client will be closed to test reconnect logic
+    sub_reconnect_idle: 31m
+
   elasticsearch:
     # Elasticsearch server node url
-    address: "http://172.16.205.80:9200"
+    address: "http://10.9.0.69:9200"
 
     # Index pattern to query for scheduler data
     index: "log-magnum-scheduler-*"
@@ -90,16 +92,16 @@ routebeat:
 
   # (optional) API queried on demand when a destination goes unscheduled to update the schedule hot cache
   # {output} in the url is replaced with the destination, otherwise it's added as the "output" query parameter
-  #events_api:
-    #url: "http://127.0.0.1:8080/api/v1/scheduler/events?output={output}"
-    #timeout: 3s
+  events_api:
+    url: "http://localhost:8090/events/{output}"
+    timeout: 3s
     #headers:
       #Authorization: "Bearer <token>"
 
   notifiers:
     auto:
-      host: "172.16.205.80"
-      types: ["notification-elastic"]
+      host: "10.9.0.69"
+      types: ["notification-elastic", "notification-http"]
 
     # manual:
       # - node: 10.9.0.69
@@ -170,7 +172,7 @@ setup.kibana:
 # ---------------------------- Elasticsearch Output ----------------------------
 output.elasticsearch:
   # Array of hosts to connect to.
-  hosts: ["172.16.205.80:9200"]
+  hosts: ["10.9.0.69:9200"]
 
   # Performance preset - one of "balanced", "throughput", "scale",
   # "latency", or "custom".

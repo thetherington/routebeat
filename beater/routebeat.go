@@ -292,7 +292,7 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	// and close the subscription client if it has been more than 60 minutes since the
 	// last notification was received to resubscribe to the subscriptions and run the reconnect logic of the subscription client
 	go func() {
-		ticker := time.NewTicker(10 * time.Minute)
+		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 
 		// initialize the last notification time to now so that we don't
@@ -761,56 +761,19 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 			//   2: decrement the counters based on the prevState
 			//   3: add the deviationStartTime field to the transition time
 			//   4: if the new status is primary, reset the transition time, add deviationEndTime
-			var msgType notify.MessageType
-
-			// set the message type of the notification based on the currentState
-			switch currentState {
-			case Primary:
-				msgType = notify.RouteValidationCorrection
-
-			case Backup, Zorro, TDA, Unsched:
-				msgType = notify.RouteValidationError
-			}
-
-			// Build Notifications Transition - Create two notifications
-			// 		Notification 1 - Is a notification that will close the previous ticket previous status with an end time
-			// 		Notification 2 - Is a notification that will open a new ticket with the current status (no end time)
-			if prevState != Unknown {
-				// Notification 1
-				// -----------------------------------------------------------------------------------------------
-				notifications = append(notifications, notify.NewBuilder(notifier.GetOrigin()).
-					WithMessageByType(msgType).
-					AddDetails(msgType, notify.Details{
-						Status:    prevState.String(),
-						Busname:   dstLabel,
-						Source:    prevSrcLabel,
-						Start:     prevTime,
-						End:       value.GetTransitionTimeStr(),
-						EventType: eventType.String(),
-						Trigger:   "GraphQL Subscription (Previous State)",
-					}).
-					WithTags("previous").
-					Build(),
-				)
-			}
-
-			// Notification 2
-			// -----------------------------------------------------------------------------------------------
-			notifications = append(notifications, notify.NewBuilder(notifier.GetOrigin()).
-				WithMessageByType(msgType).
-				AddDetails(msgType, notify.Details{
-					Status:    currentState.String(),
-					Busname:   dstLabel,
-					Source:    srcLabel,
-					Start:     value.GetTransitionTimeStr(),
-					End:       "",
-					EventType: eventType.String(),
-					Tags:      strings.Join(edge.Tags, ","),
-					Trigger:   "GraphQL Subscription (Current State)",
-				}).
-				WithTags("current").
-				Build(),
-			)
+			// Build Notifications Transition - close the previous status and open the current status
+			notifications = append(notifications, transitionNotifications(stateTransition{
+				busname:    dstLabel,
+				eventType:  eventType,
+				trigger:    "GraphQL Subscription",
+				tags:       edge.Tags,
+				prevState:  prevState,
+				prevSource: prevSrcLabel,
+				prevStart:  prevTime,
+				state:      currentState,
+				source:     srcLabel,
+				time:       value.GetTransitionTimeStr(),
+			})...)
 
 			// optimistic update the counters
 			counters.Decrement(prevState)
@@ -855,10 +818,36 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 			// 1: if the state is Primary, then reset it calls ResetTransition() to clear the transition time
 			// 2: if the state is not Primary, then it will set the transition time to now
 			// 3: update the state and the srclabel to the current state and source label
+			// 4: notify downstream systems of the corrected state
+			var deviationStart string
+
 			if currentState != prevState {
 				logp.Warn("Busname: %s has a defunct transition previous: %s, current: %s", dstLabel, prevState, currentState)
 
+				// when the stored state began and when the bus first left primary, before the correction moves or clears the transition times
+				prevTime := value.GetTransitionTimeStr()
+				firstDeviation := value.GetTransitionTimeStr(FlagTransitionStart, FlagOnlyTransition)
+
 				if reset := value.CorrectDefunctTransition(currentState); reset {
+					notifications = append(notifications, transitionNotifications(stateTransition{
+						busname:    dstLabel,
+						eventType:  eventType,
+						trigger:    "GraphQL Query (Defunct Correction)",
+						tags:       edge.Tags,
+						prevState:  value.State,
+						prevSource: value.Source,
+						prevStart:  prevTime,
+						state:      currentState,
+						source:     srcLabel,
+						time:       value.GetTransitionTimeStr(),
+					})...)
+
+					// a correction to primary ends the deviation now, report the window from when the bus first left primary
+					if currentState == Primary {
+						deviationStart = firstDeviation
+						event.PutValue("schedule.deviationEndTime", time.Now().Format(time.RFC3339))
+					}
+
 					value.SwapState(currentState)
 					value.Source = srcLabel
 
@@ -866,7 +855,11 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 				}
 			}
 
-			event.PutValue("schedule.deviationStartTime", value.GetTransitionTimeStr(FlagOnlyTransition))
+			if deviationStart == "" {
+				deviationStart = value.GetTransitionTimeStr(FlagOnlyTransition)
+			}
+
+			event.PutValue("schedule.deviationStartTime", deviationStart)
 		})
 	}
 

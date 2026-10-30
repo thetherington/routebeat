@@ -3,11 +3,13 @@ package beater
 import (
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/mapstr"
 	insite "github.com/thetherington/routebeat/beater/analytics"
+	"github.com/thetherington/routebeat/beater/notify"
 )
 
 // hotCacheEnabled reports whether anything can update the scheduleHotCache (webhook or events api)
@@ -64,6 +66,69 @@ func scheduleFields(buscode string, state RoutingState, routing *insite.BusRouti
 		"matched":       true,
 		"routingSource": source.String(),
 	}
+}
+
+// stateTransition describes a bus moving from the previous state to the current state
+type stateTransition struct {
+	busname    string
+	eventType  EventType
+	trigger    string // e.g. "GraphQL Subscription"
+	tags       []string
+	prevState  RoutingState
+	prevSource string
+	prevStart  string // when the previous state began
+	state      RoutingState
+	source     string
+	time       string // when the transition happened, the end of the previous state and the start of the current
+}
+
+// transitionNotifications builds the notifications for a state change
+//
+//	Notification 1 - closes the previous ticket with the previous status and an end time (skipped if the previous state is Unknown)
+//	Notification 2 - opens a new ticket with the current status (no end time)
+func transitionNotifications(tr stateTransition) []notify.Notification {
+	// set the message type of the notification based on the current state
+	var msgType notify.MessageType = notify.RouteValidationError
+	if tr.state == Primary {
+		msgType = notify.RouteValidationCorrection
+	}
+
+	notifications := make([]notify.Notification, 0, 2)
+
+	if tr.prevState != Unknown {
+		notifications = append(notifications, notify.NewBuilder(notifier.GetOrigin()).
+			WithMessageByType(msgType).
+			AddDetails(msgType, notify.Details{
+				Status:    tr.prevState.String(),
+				Busname:   tr.busname,
+				Source:    tr.prevSource,
+				Start:     tr.prevStart,
+				End:       tr.time,
+				EventType: tr.eventType.String(),
+				Trigger:   tr.trigger + " (Previous State)",
+			}).
+			WithTags("previous").
+			Build(),
+		)
+	}
+
+	notifications = append(notifications, notify.NewBuilder(notifier.GetOrigin()).
+		WithMessageByType(msgType).
+		AddDetails(msgType, notify.Details{
+			Status:    tr.state.String(),
+			Busname:   tr.busname,
+			Source:    tr.source,
+			Start:     tr.time,
+			End:       "",
+			EventType: tr.eventType.String(),
+			Tags:      strings.Join(tr.tags, ","),
+			Trigger:   tr.trigger + " (Current State)",
+		}).
+		WithTags("current").
+		Build(),
+	)
+
+	return notifications
 }
 
 // isUnscheduledTransition reports a notification that moved a known bus into the Unsched state.

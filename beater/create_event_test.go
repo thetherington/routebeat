@@ -258,6 +258,12 @@ func assertNotifications(t *testing.T, got []notify.Notification, want []wantNot
 
 func assertNotificationsFor(t *testing.T, bus string, got []notify.Notification, want []wantNotif) {
 	t.Helper()
+	assertNotificationsOf(t, bus, Notification, got, want)
+}
+
+// assertNotificationsOf checks notifications produced by an event of the given type
+func assertNotificationsOf(t *testing.T, bus string, eventType EventType, got []notify.Notification, want []wantNotif) {
+	t.Helper()
 
 	if len(got) != len(want) {
 		t.Fatalf("notifications = %d, want %d", len(got), len(want))
@@ -285,7 +291,7 @@ func assertNotificationsFor(t *testing.T, bus string, got []notify.Notification,
 		checkValue(t, "notification start", d.Start, w.start)
 		checkValue(t, "notification end", d.End, w.end)
 
-		if d.Busname != bus || d.EventType != Notification.String() {
+		if d.Busname != bus || d.EventType != eventType.String() {
 			t.Errorf("notification[%d] busname/eventType = %q/%q", i, d.Busname, d.EventType)
 		}
 	}
@@ -1209,6 +1215,8 @@ func TestCreateEventFromEdgeUnscheduledRecheck(t *testing.T) {
 }
 
 func TestCreateEventFromEdgeQueryDefunct(t *testing.T) {
+	useNotifier(t, stubNotifier{})
+
 	t.Run("backup corrected to primary on the fourth query", func(t *testing.T) {
 		resetCaches()
 		seedSchedule()
@@ -1231,6 +1239,7 @@ func TestCreateEventFromEdgeQueryDefunct(t *testing.T) {
 			}
 
 			checkValue(t, "deviationStartTime", fieldStr(t, res, "schedule.deviationStartTime"), transition)
+			assertNoField(t, res, "schedule.deviationEndTime")
 			assertCounters(t, counters, Counters{Primary: 1})
 			assertNotifications(t, res.notifications, nil)
 		}
@@ -1242,8 +1251,40 @@ func TestCreateEventFromEdgeQueryDefunct(t *testing.T) {
 			t.Errorf("bus after correction = %+v, want a reset transition", got)
 		}
 
-		checkValue(t, "deviationStartTime", fieldStr(t, res, "schedule.deviationStartTime"), "-")
+		// the event reports the deviation window: no transition start was stored, so it began at the transition
+		checkValue(t, "deviationStartTime", fieldStr(t, res, "schedule.deviationStartTime"), transition)
+		checkValue(t, "deviationEndTime", fieldStr(t, res, "schedule.deviationEndTime"), isNow)
+
+		// the correction closes the stored backup state and opens primary for downstream systems
+		assertNotificationsOf(t, "BUS1", Query, res.notifications, []wantNotif{
+			{tag: "previous", status: Backup.String(), source: "SRC2", summary: "Correction", start: transition, end: isNow},
+			{tag: "current", status: Primary.String(), source: "SRC1", summary: "Correction", start: isNow, end: isEmpty},
+		})
+		assertDefunctTrigger(t, res.notifications)
+
+		// the next query is in sync and doesn't notify again or report the deviation
+		res, _ = bt.CreateEventFromEdge(newTestEdge("BUS1", edgeOpts{src: "SRC1"}), "MES", &Counters{}, Query)
 		assertNotifications(t, res.notifications, nil)
+		checkValue(t, "deviationStartTime", fieldStr(t, res, "schedule.deviationStartTime"), "-")
+		assertNoField(t, res, "schedule.deviationEndTime")
+	})
+
+	t.Run("correction to primary reports when the bus first left primary", func(t *testing.T) {
+		resetCaches()
+		seedSchedule()
+		bs := seedBus("BUS1", Backup, "SRC2", 10*time.Minute, 20*time.Minute, 0)
+		firstDeviation := fmtTime(bs.TransitionStart)
+
+		bt := newTestBeat(t, beatOpts{})
+
+		var res *EventResults
+		for range 4 {
+			res, _ = bt.CreateEventFromEdge(newTestEdge("BUS1", edgeOpts{src: "SRC1"}), "MES", &Counters{}, Query)
+		}
+
+		assertBus(t, "BUS1", Primary, "SRC1")
+		checkValue(t, "deviationStartTime", fieldStr(t, res, "schedule.deviationStartTime"), firstDeviation)
+		checkValue(t, "deviationEndTime", fieldStr(t, res, "schedule.deviationEndTime"), isNow)
 	})
 
 	t.Run("primary corrected to backup on the fourth query", func(t *testing.T) {
@@ -1254,8 +1295,12 @@ func TestCreateEventFromEdgeQueryDefunct(t *testing.T) {
 		bt := newTestBeat(t, beatOpts{})
 
 		var res *EventResults
-		for range 4 {
+		for call := 1; call <= 4; call++ {
 			res, _ = bt.CreateEventFromEdge(newTestEdge("BUS1", edgeOpts{src: "SRC2"}), "MES", &Counters{}, Query)
+
+			if call < 4 {
+				assertNotifications(t, res.notifications, nil)
+			}
 		}
 
 		got := assertBus(t, "BUS1", Backup, "SRC2")
@@ -1264,6 +1309,16 @@ func TestCreateEventFromEdgeQueryDefunct(t *testing.T) {
 		}
 
 		checkValue(t, "deviationStartTime", fieldStr(t, res, "schedule.deviationStartTime"), isNow)
+
+		// a correction away from primary starts a deviation, it doesn't end one
+		assertNoField(t, res, "schedule.deviationEndTime")
+
+		// primary had no transition, so the previous state start is "-"
+		assertNotificationsOf(t, "BUS1", Query, res.notifications, []wantNotif{
+			{tag: "previous", status: Primary.String(), source: "SRC1", summary: "Error", start: "-", end: isNow},
+			{tag: "current", status: Backup.String(), source: "SRC2", summary: "Error", start: isNow, end: isEmpty},
+		})
+		assertDefunctTrigger(t, res.notifications)
 	})
 
 	t.Run("same state reports the transition time", func(t *testing.T) {
@@ -1306,6 +1361,24 @@ func TestCreateEventFromEdgeQueryDefunct(t *testing.T) {
 
 		checkValue(t, "schedule.status", fieldStr(t, res, "schedule.status"), Unsched.String())
 	})
+}
+
+func assertNoField(t *testing.T, res *EventResults, key string) {
+	t.Helper()
+
+	if v, ok := field(res, key); ok {
+		t.Errorf("%s = %v, should not be set", key, v)
+	}
+}
+
+func assertDefunctTrigger(t *testing.T, got []notify.Notification) {
+	t.Helper()
+
+	for i, n := range got {
+		if trigger := n.Context.Basic[0].Details.Trigger; !strings.HasPrefix(trigger, "GraphQL Query (Defunct Correction)") {
+			t.Errorf("notification[%d] trigger = %q", i, trigger)
+		}
+	}
 }
 
 func TestCreateEventFromEdgeNoopNotifier(t *testing.T) {
