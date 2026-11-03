@@ -74,6 +74,7 @@ type Webhook struct {
 type EventsAPI struct {
 	Url     string            `config:"url"` // empty url disables the events api
 	Timeout time.Duration     `config:"timeout"`
+	Delay   time.Duration     `config:"delay"` // pause before the request, to allow the api to receive new data
 	Headers map[string]string `config:"headers"`
 }
 

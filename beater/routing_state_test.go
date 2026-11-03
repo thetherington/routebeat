@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/elastic/elastic-agent-libs/logp"
 	insite "github.com/thetherington/routebeat/beater/analytics"
 	"github.com/thetherington/routebeat/beater/eventsapi"
 	"github.com/thetherington/routebeat/beater/notify"
@@ -93,6 +95,96 @@ func TestEventsAPIRefreshUpdatesMultipleOutputs(t *testing.T) {
 		if !ok || r.Pri != w.pri || r.Sec != w.sec {
 			t.Errorf("%s = %+v %t, want pri=%q sec=%q", output, r, ok, w.pri, w.sec)
 		}
+	}
+}
+
+// the ScheduleHotCache (hit) and ScheduleHotCacheMiss selectors log the same fields for every hot cache check
+func TestRecheckHotRouteLogs(t *testing.T) {
+	const (
+		hit  = "ScheduleHotCache"
+		miss = "ScheduleHotCacheMiss"
+	)
+
+	if err := logp.DevelopmentSetup(logp.ToObserverOutput(), logp.WithSelectors(hit, miss)); err != nil {
+		t.Fatal(err)
+	}
+
+	const wait = 40 * time.Millisecond
+	start, end := activeWindow()
+	original := &insite.BusRouting{Pri: "ES_PRI", Sec: "ES_SEC"}
+
+	tests := []struct {
+		name    string
+		webhook bool
+		body    string // events api response
+		post    string // webhook payload delivered during the wait
+		want    []string
+	}{
+		{
+			name: "events api with no routing",
+			body: "[]",
+			want: []string{
+				miss + ": Hot cache miss Destination:BUS1 Source:SRC_NEW Check:events_api Reason:no_active_routing Primary: Backup:",
+			},
+		},
+		{
+			name:    "events api and webhook wait with a different source",
+			webhook: true,
+			body:    "[" + apgEventJSON("BUS1", "OTHER_PRI", "MAIN", start, end) + "," + apgEventJSON("BUS1", "OTHER_SEC", "BACKUP", start, end) + "]",
+			want: []string{
+				miss + ": Hot cache miss Destination:BUS1 Source:SRC_NEW Check:events_api Reason:source_not_scheduled Primary:OTHER_PRI Backup:OTHER_SEC",
+				miss + ": Hot cache miss Destination:BUS1 Source:SRC_NEW Check:webhook_wait Reason:source_not_scheduled Primary:OTHER_PRI Backup:OTHER_SEC",
+			},
+		},
+		{
+			name: "events api hit",
+			body: "[" + apgEventJSON("BUS1", "SRC_NEW", "MAIN", start, end) + "," + apgEventJSON("BUS1", "OTHER_SEC", "BACKUP", start, end) + "]",
+			want: []string{
+				hit + ": Hot cache hit Destination:BUS1 Source:SRC_NEW Check:events_api State:Primary Primary:SRC_NEW Backup:OTHER_SEC",
+			},
+		},
+		{
+			name:    "events api miss then webhook wait hit",
+			webhook: true,
+			body:    "[]",
+			post:    apgEventJSON("BUS1", "SRC_NEW", "BACKUP", start, end),
+			want: []string{
+				miss + ": Hot cache miss Destination:BUS1 Source:SRC_NEW Check:events_api Reason:no_active_routing Primary: Backup:",
+				hit + ": Hot cache hit Destination:BUS1 Source:SRC_NEW Check:webhook_wait State:Backup Primary: Backup:SRC_NEW",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetCaches()
+			logp.ObserverLogs().TakeAll()
+
+			srv, _ := newEventsAPIStub(t, http.StatusOK, func(string) string { return tt.body })
+
+			bt := &routebeat{config: routeCfg.Config{Webhook: routeCfg.Webhook{Enabled: tt.webhook, Wait: wait}}}
+			bt.eventsAPI = newTestEventsAPI(t, srv.URL)
+
+			if tt.post != "" {
+				go func() {
+					time.Sleep(wait / 2)
+					SchedulerHookCallback(context.Background(), []byte(tt.post))
+				}()
+			}
+
+			bt.recheckHotRoute("BUS1", "SRC_NEW", original, SourceCache)
+
+			var got []string
+			for _, entry := range logp.ObserverLogs().TakeAll() {
+				if entry.LoggerName == hit || entry.LoggerName == miss {
+					got = append(got, entry.LoggerName+": "+entry.Message)
+				}
+			}
+
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("hot cache logs:\n got  %q\n want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -253,6 +345,67 @@ func TestRecheckHotRoute(t *testing.T) {
 		state, r, src := bt.recheckHotRoute("BUS1", "SRC_NEW", original, SourceCache)
 		if state != Backup || r.Sec != "SRC_NEW" || src != SourceHotCache {
 			t.Errorf("got %s %+v %s", state, r, src)
+		}
+	})
+
+	// stub api with latency: it only has the new event once ready is set
+	var ready atomic.Bool
+	var requested atomic.Int64
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested.Store(time.Now().UnixNano())
+		if !ready.Load() {
+			w.Write([]byte("[]"))
+			return
+		}
+		w.Write([]byte(apgEventJSON(r.URL.Query().Get("output"), "SRC_NEW", "MAIN", start, end)))
+	}))
+	defer slow.Close()
+
+	t.Run("events api delay pauses before the request", func(t *testing.T) {
+		resetCaches()
+		ready.Store(false)
+
+		bt := &routebeat{config: routeCfg.Config{EventsAPI: routeCfg.EventsAPI{Delay: wait}}}
+		bt.eventsAPI = newTestEventsAPI(t, slow.URL)
+
+		// the api receives the new data partway through the delay
+		go func() {
+			time.Sleep(wait / 2)
+			ready.Store(true)
+		}()
+
+		began := time.Now()
+		state, r, src := bt.recheckHotRoute("BUS1", "SRC_NEW", original, SourceCache)
+
+		if state != Primary || r.Pri != "SRC_NEW" || src != SourceHotCache {
+			t.Errorf("got %s %+v %s, want the hot routing", state, r, src)
+		}
+
+		if delayed := time.Duration(requested.Load() - began.UnixNano()); delayed < wait {
+			t.Errorf("api requested after %s, want at least %s", delayed, wait)
+		}
+	})
+
+	t.Run("events api delay match skips the webhook wait", func(t *testing.T) {
+		resetCaches()
+		ready.Store(true)
+
+		bt := &routebeat{config: routeCfg.Config{
+			Webhook:   routeCfg.Webhook{Enabled: true, Wait: 10 * wait},
+			EventsAPI: routeCfg.EventsAPI{Delay: wait},
+		}}
+		bt.eventsAPI = newTestEventsAPI(t, slow.URL)
+
+		began := time.Now()
+		state, _, _ := bt.recheckHotRoute("BUS1", "SRC_NEW", original, SourceCache)
+		elapsed := time.Since(began)
+
+		if state != Primary {
+			t.Errorf("state = %s, want Primary", state)
+		}
+
+		if elapsed < wait || elapsed >= 10*wait {
+			t.Errorf("took %s, want the delay (%s) without the webhook wait", elapsed, wait)
 		}
 	})
 }

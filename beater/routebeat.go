@@ -474,7 +474,9 @@ func (bt *routebeat) SubscriptionClientRun() {
 
 // Builds beat events based on the Edge{} struct definition
 func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) {
-	logp.Debug("ProcessResults", "Query Results for Tag: %s, Total Edges:%d, EventType %s", tag, len(edges), eventType)
+	selector := processResultsSelector(eventType)
+
+	logp.Debug(selector, "Query Results for Tag: %s, Total Edges:%d, EventType %s", tag, len(edges), eventType)
 
 	var (
 		events []beat.Event
@@ -486,6 +488,7 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 
 		counters      = &Counters{Tag: tag}            // counters for the schedule state routing
 		notifications = make([]notify.Notification, 0) // notifications to send
+		destinations  []string                         // destination labels in a notification batch, for the debug logs
 	)
 
 	for _, edge := range edges {
@@ -509,7 +512,17 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 		events = append(events, *results.event)
 		notifications = append(notifications, results.notifications...)
 
+		if eventType == Notification {
+			destinations = append(destinations, eventDestination(results.event))
+		}
+
 		processed++
+	}
+
+	// notification batches list their destinations in the debug logs, query batches only log totals
+	var destinationsLog string
+	if eventType == Notification {
+		destinationsLog = ", Destinations: " + strings.Join(destinations, ",")
 	}
 
 	switch eventType {
@@ -581,19 +594,20 @@ func (bt *routebeat) BuildEvents(tag string, edges []Edge, eventType EventType) 
 				return
 			}
 
-			logp.Debug("ProcessResults", "Sent %d notifications for Tag: %s", len(notifications), tag)
+			logp.Debug(selector, "Sent %d notifications for Tag: %s, EventType: %s%s", len(notifications), tag, eventType, destinationsLog)
 		}()
 	}
 
 	bt.client.PublishAll(events)
 
-	logp.Debug("ProcessResults", "Tag: %s, Processed: %d, Discarded: %d, Unmatched: %d, Expired: %d, EventType: %s",
+	logp.Debug(selector, "Tag: %s, Processed: %d, Discarded: %d, Unmatched: %d, Expired: %d, EventType: %s%s",
 		tag,
 		processed,
 		discarded,
 		unmatched,
 		expired,
 		eventType,
+		destinationsLog,
 	)
 }
 

@@ -195,6 +195,17 @@ This replaces an older behaviour in which a blank source matched a blank schedul
 | API failure falls back to the webhook wait | 1 call, then waits |
 | API failure without webhook does not wait | accepts unscheduled immediately |
 | webhook data arriving during the wait is used | a payload posted halfway through the wait is picked up |
+| events API delay pauses before the request | the stub API only gets the new event halfway through `events_api.delay`; the request is sent after the delay, so the new event is found and the bus is `Primary` from `hotcache` |
+| events API delay match skips the webhook wait | with a delay and a long webhook wait, a match after the delay returns without waiting for the webhook |
+
+**`TestRecheckHotRouteLogs`** captures the `ScheduleHotCache` (hit) and `ScheduleHotCacheMiss` debug output and checks the exact log lines in order. Every line includes the destination, the source, the check, the reason or state, and the hot primary and backup:
+
+| Case | Expected log lines |
+|---|---|
+| events API with no routing | miss: `Check:events_api Reason:no_active_routing`, blank primary and backup |
+| events API and webhook wait with a different source | two misses, `Check:events_api` then `Check:webhook_wait`, both `Reason:source_not_scheduled` with the hot primary and backup |
+| events API hit | hit: `Check:events_api State:Primary` with the hot primary and backup; no miss |
+| events API miss then webhook wait hit | miss: `Check:events_api Reason:no_active_routing`, then hit: `Check:webhook_wait State:Backup` |
 
 **`TestIsUnscheduledTransition`** checks when a recheck is triggered: only for a notification that moves a known bus into `UnscheduledAudio`. It isn't triggered for queries, for a bus with no earlier state, or for a bus that was already unscheduled.
 
@@ -293,7 +304,9 @@ python3 -I beater/testdata/fetch_fixtures.py http://<elasticsearch>:9200
 |---|---|---|
 | `beater/eventsapi` | `TestNewValidation`, `TestRequestURL`, `TestRefresh` | the URL is required; `{output}` is replaced in the URL, or `?output=` is added; the response body is passed on for processing; errors from processing it are returned; a non-2xx response or a timeout is an error and nothing is processed |
 | `beater/httpserver` | `TestSchedulerEventRouting`, `TestHandleSchedulerEvent`, `TestStart*`, `TestWriteJSON` | only `POST /api/v1/scheduler/events` is routed; 202 / 400 / 405 / 500 responses; the payload reaches processing unchanged and with the request context; the server starts and shuts down cleanly; a port already in use is reported |
-| `config` | config tests | defaults and parsing of the `webhook` and `events_api` options |
+| `beater` (logging) | `TestBuildEventsProcessResultsLogs`, `TestEventDestination` | a notification batch's summary log lists its destinations by mapping label (matched and unmatched, not discarded); a query batch's summary has no destinations; without a label the Magnum destination name is used |
+| `beater` (logging) | `TestProcessResultsSelector` | the `ProcessResults.Query` and `ProcessResults.Notifications` sub selectors each enable only their event type; `ProcessResults.*` and `ProcessResults` enable both; `*` logs each under its own sub selector; unrelated selectors log nothing |
+| `config` | config tests | defaults and parsing of the `webhook` and `events_api` options, including `events_api.delay` (default `0s`) |
 
 ## Known behaviour pinned by the tests
 

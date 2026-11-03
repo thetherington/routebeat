@@ -95,6 +95,7 @@ routebeat:
   events_api:
     url: "http://localhost:8090/events/{output}"
     timeout: 3s
+    #delay: 0s
     #headers:
       #Authorization: "Bearer <token>"
 

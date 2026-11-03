@@ -21,7 +21,7 @@ func TestWebhookAndEventsAPIDefaults(t *testing.T) {
 		t.Errorf("webhook defaults = %+v", c.Webhook)
 	}
 
-	if c.EventsAPI.Url != "" || c.EventsAPI.Timeout != 3*time.Second {
+	if c.EventsAPI.Url != "" || c.EventsAPI.Timeout != 3*time.Second || c.EventsAPI.Delay != 0 {
 		t.Errorf("events api defaults = %+v", c.EventsAPI)
 	}
 }
@@ -33,6 +33,7 @@ func TestWebhookAndEventsAPIUnpack(t *testing.T) {
 		"webhook": map[string]any{"enabled": false, "wait": "2s"},
 		"events_api": map[string]any{
 			"url":     "http://host/api?output={output}",
+			"delay":   "500ms",
 			"headers": map[string]any{"Authorization": "Bearer x"},
 		},
 	})
@@ -45,7 +46,8 @@ func TestWebhookAndEventsAPIUnpack(t *testing.T) {
 		t.Errorf("webhook = %+v", c.Webhook)
 	}
 
-	if c.EventsAPI.Url != "http://host/api?output={output}" || c.EventsAPI.Headers["Authorization"] != "Bearer x" {
+	if c.EventsAPI.Url != "http://host/api?output={output}" || c.EventsAPI.Delay != 500*time.Millisecond ||
+		c.EventsAPI.Headers["Authorization"] != "Bearer x" {
 		t.Errorf("events api = %+v", c.EventsAPI)
 	}
 }

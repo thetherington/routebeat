@@ -391,6 +391,9 @@ sequenceDiagram
     SDVN->>RB: terminalsUpdated (BSITAL → DCZA009D)
     RB->>RB: DCZA009D not scheduled → UnscheduledAudio
     alt events_api configured
+        opt events_api.delay set
+            RB->>RB: pause events_api.delay (let the api receive new data)
+        end
         RB->>API: GET events for BSITAL
         API-->>RB: [apg MAIN DCZA009D, apg BACKUP ...]
         RB->>HC: apply active MAIN/BACKUP events
@@ -405,11 +408,12 @@ sequenceDiagram
     RB->>RB: no match → accept UnscheduledAudio
 ```
 
-- If the events API is configured, it's tried first. A match returns straight away, without waiting.
+- If the events API is configured, it's tried first. A match returns straight away, without the webhook wait.
+- If the events API is slow to receive new scheduler data, set `events_api.delay`. Routebeat then pauses that long before calling the API, so the request is more likely to include the change that just happened. Webhook data that arrives during the pause is still used, because the hot cache is checked again after the API call.
 - If the API is down, returns an error or doesn't match, the webhook wait is used as a fallback (when the webhook is on).
 - With both the webhook and the events API off, `UnscheduledAudio` is accepted immediately.
 - The recheck never runs for queries, for buses seen for the first time, or for buses already unscheduled.
-- A recheck delays the destinations after it in the same batch by up to `webhook.wait` plus the events API timeout.
+- A recheck delays the destinations after it in the same batch by up to `events_api.delay` plus the events API timeout plus `webhook.wait`.
 
 ### Transitions and deviation times
 
@@ -718,6 +722,7 @@ routebeat:
   # events_api:
   #   url: "http://<scheduler-events>/api/v1/scheduler/events?output={output}"
   #   timeout: 3s
+  #   delay: 0s
   #   headers:
   #     Authorization: "Bearer <token>"
 
@@ -766,6 +771,7 @@ routebeat:
 | **`events_api`** | | **Hot cache: pull** (off unless `url` is set) |
 | `events_api.url` | | `{output}` is replaced with the bus code; without it, `?output=<bus>` is added |
 | `events_api.timeout` | `3s` | request timeout |
+| `events_api.delay` | `0s` | pause before each request, in case the API is slow to receive new scheduler data; `0s` calls the API immediately |
 | `events_api.headers` | | extra request headers, for example authorization |
 | **`notifiers`** | | **Alert delivery** (`manual` takes priority over `auto`) |
 | `notifiers.manual[].node` / `port` | | fixed notification program endpoints |
@@ -798,7 +804,7 @@ Every 5 minutes, routebeat logs counts of accepted, skipped and invalid schedule
 
 ### Events API
 
-Routebeat calls `GET <events_api.url>`, with the bus code put in `{output}` or added as `?output=<bus>`. Any configured headers are sent with the request. A `2xx` response body is processed exactly like a webhook payload. Any other status, a timeout, or a connection error is logged, and routebeat falls back to the webhook wait.
+After the optional `events_api.delay`, routebeat calls `GET <events_api.url>`, with the bus code put in `{output}` or added as `?output=<bus>`. Any configured headers are sent with the request. A `2xx` response body is processed exactly like a webhook payload. Any other status, a timeout, or a connection error is logged, and routebeat falls back to the webhook wait.
 
 A mock events API for testing is included:
 
@@ -836,24 +842,37 @@ make                                    # build ./routebeat
 Routebeat's debug messages are grouped under **selectors**. Choose which ones to show with `-d`. Use a comma-separated list, or `"*"` for every selector, including the libbeat ones:
 
 ```bash
-./routebeat -c routebeat.yml -e -d "ProcessResults,ScheduleCache,ScheduleHotCache"
+./routebeat -c routebeat.yml -e -d "ProcessResults.Notifications,ScheduleCache,ScheduleHotCache"
 ```
 
 or in `routebeat.yml`:
 
 ```yaml
 logging.level: debug
-logging.selectors: ["ProcessResults", "ScheduleCache", "ScheduleHotCache"]
+logging.selectors: ["ProcessResults.*", "ScheduleCache", "ScheduleHotCache"]
 ```
 
 | Selector | What it logs | Use it to |
 |---|---|---|
-| `ProcessResults` | For each query or notification batch: the tag, number of destinations and event type; then the totals of **processed**, **discarded** (tag didn't match exactly), **unmatched** (not in the schedule) and **expired**; and how many alerts were sent for the tag | follow each poll and subscription message, and see how many destinations matched the schedule |
+| `ProcessResults.Query`<br>`ProcessResults.Notifications` | For each batch of that event type (periodic query or subscription notification): the tag, number of destinations and event type; then the totals of **processed**, **discarded** (tag didn't match exactly), **unmatched** (not in the schedule) and **expired**; and how many alerts were sent for the tag. Notification batches also list the destinations they contained (`Destinations: BSITAL,BSTRJA`, using the mapping nameset label, or the Magnum destination name without mapping); query batches only log totals. `ProcessResults.*` or `ProcessResults` turns on both (see below) | follow each poll or each subscription message on its own, and see how many destinations matched the schedule |
 | `ScheduleCache` | For every destination that matched a schedule: the destination and source labels, the routing source (`cache` or `hotcache`), and the schedule found (primary, backup, window) | find out why a bus got a particular status: compare its source label with the scheduled primary and backup |
-| `ScheduleHotCache` | The unscheduled recheck found a hot cache routing that matches the new source, with the destination, source and routing | confirm that a webhook or events API update rescued a bus from `UnscheduledAudio` |
+| `ScheduleHotCache` | An unscheduled recheck found a hot cache routing that matches the source. It uses the same fixed `Key:value` format as `ScheduleHotCacheMiss`, with `State` in place of `Reason`:<br>`Hot cache hit Destination:<bus> Source:<source label> Check:<events_api\|webhook_wait> State:<Primary\|Backup> Primary:<hot primary> Backup:<hot backup>` | confirm that a webhook or events API update rescued a bus from `UnscheduledAudio`, and which check found it |
+| `ScheduleHotCacheMiss` | Each time an unscheduled recheck looks at the hot cache and doesn't find a match. One line per check, in a fixed `Key:value` format:<br>`Hot cache miss Destination:<bus> Source:<source label> Check:<events_api\|webhook_wait> Reason:<no_active_routing\|source_not_scheduled> Primary:<hot primary> Backup:<hot backup>`<br>`no_active_routing` means the hot cache has no active entry for the bus, and Primary and Backup are blank. `source_not_scheduled` means an active entry exists but the source is neither its primary nor its backup. | find buses the hot cache couldn't rescue, and collect the destination and source pairs, for example to check later what the scheduler or events API should have sent |
 | `QueryScheduler` | The number of buses in the schedule cache after each Elasticsearch poll | check that the poll is running and returning the expected number of buses |
 | `SchedulerHookCallback` | For each webhook or events API payload: the number of `apg` events received and hot cache buses updated, each active event, each bus updated, and `apg` events that couldn't be decoded. Every 5 minutes it also logs counters for the previous 5 minutes: `non-apg` (dropped as another task or shape), `invalid` (bad JSON, dates or format), `apg-no-tag` (no `MAIN`/`BACKUP` tag), `apg-in-active` (active, applied), `apg-outside-active` (outside their window, skipped) | check what the scheduler is sending and why events are or aren't reaching the hot cache |
 | `CleanupScheduleHotCache` | Each expired hot cache entry removed, and the total removed, every 10 minutes | confirm that old overrides are dropped |
+
+Libbeat matches selectors exactly; the only wildcard it understands is `*`. Routebeat adds its own handling for the `ProcessResults` group:
+
+| Selectors set | Query batch logs | Notification batch logs |
+|---|---|---|
+| `ProcessResults.Query` | yes, as `ProcessResults.Query` | no |
+| `ProcessResults.Notifications` | no | yes, as `ProcessResults.Notifications` |
+| `ProcessResults.*` | yes, as `ProcessResults.*` | yes, as `ProcessResults.*` |
+| `ProcessResults` | yes, as `ProcessResults` | yes, as `ProcessResults` |
+| `*` | yes, as `ProcessResults.Query` | yes, as `ProcessResults.Notifications` |
+
+A log line carries the name of the selector that let it through. With `ProcessResults.*` or `ProcessResults` set, both event types show that name, so use the `EventType` field in the message to tell them apart. `ProcessResults.*` is only understood for this group; other `.*` patterns match nothing.
 
 Info, warning and error messages are always logged, whatever selectors are set. These include defunct-state warnings and self-corrections, events API failures, rejected webhook payloads, subscription reconnects and alert delivery errors.
 
