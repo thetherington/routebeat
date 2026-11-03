@@ -69,7 +69,7 @@ Each case can check any of the following:
 | Transitions, alerts, counters, deviation times | `TestCreateEventFromEdgeTransitions`, `TestCreateEventFromEdgeNotificationNoChange`, `TestCreateEventFromEdgeSequence` |
 | Unscheduled recheck | `TestCreateEventFromEdgeUnscheduledRecheck`, `TestRecheckHotRoute`, `TestIsUnscheduledTransition` |
 | Self-correction | `TestCreateEventFromEdgeQueryDefunct` |
-| Scheduler payloads and hot cache | `TestParseSchedulerEvents`, `TestSchedulerWebhookResponses`, `TestSchedulerAPGEventBusRouting`, `TestMergeBusRouting`, `TestApplySchedulerEvents`, `TestPruneScheduleHotCache`, `TestEventsAPIRefreshUpdatesHotCache`, `TestEventsAPIRefreshUpdatesMultipleOutputs` |
+| Scheduler payloads and hot cache | `TestParseSchedulerEvents`, `TestSchedulerWebhookResponses`, `TestSchedulerAPGEventBusRouting`, `TestMergeBusRouting`, `TestApplySchedulerEvents`, `TestPruneScheduleHotCache`, `TestSaveCaches`, `TestEventsAPIRefreshUpdatesHotCache`, `TestEventsAPIRefreshUpdatesMultipleOutputs` |
 | Real lab data | `TestRealSchedulerEvents*`, `TestRealRoutebeatReplay`, `TestRealNotificationSequence` |
 
 All statements in the deviation engine and the unscheduled recheck are covered.
@@ -270,6 +270,8 @@ These tests cover the payloads that reach the hot cache from the webhook and the
 - an entry a reader already holds is never changed in place.
 
 **`TestSchedulerHookCallbackConcurrentReads`** writes to the hot cache and reads it at the same time, under the race detector, to prove the hot cache is safe to share.
+
+**`TestSaveCaches`** saves the caches in a temporary directory and loads them back the way startup does. With the hot cache enabled, both files are written: the bus state is restored and only active hot cache entries come back (expired ones are pruned before saving). With the hot cache disabled, only the bus cache file is written.
 
 **`TestPruneScheduleHotCache`** checks that expired, empty and dateless entries are removed, both in memory and after the hot cache is reloaded from file. Active entries are kept.
 

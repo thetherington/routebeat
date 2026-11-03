@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -422,6 +423,73 @@ func TestGetBusRoutingFromCaches(t *testing.T) {
 			t.Error("routing should be returned when end dates are not validated")
 		}
 	})
+}
+
+func TestSaveCaches(t *testing.T) {
+	// the cache files are written to the working directory
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name         string
+		saveHotCache bool
+	}{
+		{name: "hot cache enabled saves both caches", saveHotCache: true},
+		{name: "hot cache disabled saves only the bus cache", saveHotCache: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.Chdir(t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chdir(wd) })
+
+			resetCaches()
+			now := time.Now().UTC()
+
+			busCache.Set("BUS1", NewBusState(Backup, "SRC2"))
+			scheduleHotCache.Set("ACTIVE", routing("SRC1", "SRC2", now.Add(-time.Hour), now.Add(time.Hour)))
+			scheduleHotCache.Set("EXPIRED", routing("SRC3", "", now.Add(-2*time.Hour), now.Add(-time.Hour)))
+
+			saveCaches(tt.saveHotCache)
+
+			// load the files back the same way New() does
+			resetCaches()
+
+			if err := busCache.LoadFromFile(BUSCACHE_FILE); err != nil {
+				t.Fatal(err)
+			}
+
+			if bs, ok := busCache.Get("BUS1"); !ok || bs.State != Backup || bs.Source != "SRC2" {
+				t.Errorf("bus cache = %+v %t", bs, ok)
+			}
+
+			err := scheduleHotCache.LoadFromFile(HOTCACHE_FILE)
+
+			if !tt.saveHotCache {
+				if !os.IsNotExist(err) {
+					t.Errorf("hot cache file should not be written, load err = %v", err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// expired entries are pruned before saving
+			if r, ok := scheduleHotCache.Get("ACTIVE"); !ok || r.Pri != "SRC1" || r.Sec != "SRC2" {
+				t.Errorf("ACTIVE = %+v %t", r, ok)
+			}
+
+			if scheduleHotCache.Has("EXPIRED") {
+				t.Error("expired entry was saved")
+			}
+		})
+	}
 }
 
 func TestPruneScheduleHotCache(t *testing.T) {

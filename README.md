@@ -823,7 +823,7 @@ events_api:
 | File | Content | Saved | Loaded |
 |---|---|---|---|
 | `busCache.gob` | stored state, source and deviation times for every bus | every 10 minutes and on shutdown | at startup |
-| `scheduleHotCache.gob` | hot cache entries | *(saving not enabled yet)* | at startup when the hot cache is enabled; expired entries are dropped |
+| `scheduleHotCache.gob` | active hot cache entries (expired entries are dropped before saving) | every 10 minutes and on shutdown, only when the hot cache is enabled (webhook or events API on) | at startup when the hot cache is enabled; entries that expired while routebeat was down are dropped |
 | `scheduleCache.gob` | schedule cache | on shutdown with `dev.save_cache` | with `dev.load_cache` (development) |
 
 Because the bus cache is saved, an open deviation keeps its start time across restarts. Any change missed while routebeat was down is fixed by [self-correction](#self-correction-when-out-of-sync).

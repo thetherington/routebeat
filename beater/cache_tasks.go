@@ -108,33 +108,42 @@ func AnalyticsQueryGoRoutine(period time.Duration, done <-chan struct{}) {
 	}
 }
 
-// run in the background to save the buscache to a file
-func SaveBusCacheGoRoutine(done <-chan struct{}) {
+// run in the background to save the busCache, and the scheduleHotCache when it's in use, to a file
+func SaveCachesGoRoutine(done <-chan struct{}, saveHotCache bool) {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-done:
-			logp.Warn("exiting busCache save to file routine")
-
-			if err := busCache.SaveToFile(BUSCACHE_FILE); err != nil {
-				logp.Err("failed to save busCache to file: %v", err)
-			}
-			// if err := scheduleHotCache.SaveToFile(HOTCACHE_FILE); err != nil {
-			// 	logp.Err("failed to save scheduleHotCache to file: %v", err)
-			// }
+			logp.Warn("exiting cache save to file routine")
+			saveCaches(saveHotCache)
 
 			return
 		case <-ticker.C:
 		}
 
-		if err := busCache.SaveToFile(BUSCACHE_FILE); err != nil {
-			logp.Err("failed to save busCache to file: %v", err)
-		}
-		// if err := scheduleHotCache.SaveToFile(HOTCACHE_FILE); err != nil {
-		// 	logp.Err("failed to save scheduleHotCache to file: %v", err)
-		// }
+		saveCaches(saveHotCache)
+	}
+}
+
+// saveCaches saves the busCache, and the scheduleHotCache if saveHotCache is set, to their files
+func saveCaches(saveHotCache bool) {
+	if err := busCache.SaveToFile(BUSCACHE_FILE); err != nil {
+		logp.Err("failed to save busCache to file: %v", err)
+	}
+
+	// the hot cache is only saved when the webhook or the events api can update it, so a
+	// disabled hot cache doesn't overwrite a saved file with an empty one
+	if !saveHotCache {
+		return
+	}
+
+	// drop expired entries first so only active routings are saved
+	PruneScheduleHotCache(time.Now())
+
+	if err := scheduleHotCache.SaveToFile(HOTCACHE_FILE); err != nil {
+		logp.Err("failed to save scheduleHotCache to file: %v", err)
 	}
 }
 

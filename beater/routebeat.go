@@ -226,8 +226,8 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		go AnalyticsQueryGoRoutine(bt.config.ES.Period, bt.done)
 	}
 
-	// go routine to save the busCache to file every 10 minutes incase of a crash
-	go SaveBusCacheGoRoutine(bt.done)
+	// go routine to save the busCache, and the scheduleHotCache when it's in use, to file every 10 minutes incase of a crash
+	go SaveCachesGoRoutine(bt.done, bt.hotCacheEnabled())
 
 	// create the graphql query client
 	queryClient := graphql.NewClient(bt.config.API.Url, bt.httpClient)
