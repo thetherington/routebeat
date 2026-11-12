@@ -28,7 +28,8 @@ go test -count=1 -run 'TestCreateEventFromEdgeUnscheduledRecheck' -v ./beater/
 - [Self-correction (defunct state)](#self-correction-defunct-state)
 - [Multi-step sequence](#multi-step-sequence)
 - [Notifier fallback](#notifier-fallback)
-- [Scheduler events and the hot cache](#scheduler-events-and-the-hot-cache)
+- [Schedule poll and refresh](#schedule-poll-and-refresh)
+- [Schedule package](#schedule-package)
 - [Real lab data replays](#real-lab-data-replays)
 - [Supporting packages](#supporting-packages)
 - [Known behaviour pinned by the tests](#known-behaviour-pinned-by-the-tests)
@@ -37,40 +38,40 @@ go test -count=1 -run 'TestCreateEventFromEdgeUnscheduledRecheck' -v ./beater/
 
 ## How the tests are built
 
-The tests call the deviation engine directly with Magnum SDVN destinations built in memory, so they need no Magnum, Elasticsearch or notification server.
+The tests call the deviation engine directly with Magnum SDVN destinations built in memory, so they need no Magnum, events API or notification server.
 
 | Building block | Purpose |
 |---|---|
 | **Test destination** | a destination `BUS1` on tag `MES`, with a Broadview nameset. Options control its tags, its subscribed source label and source tags, and its routed physical source. |
-| **Seeded schedule** | an active schedule for `BUS1` with primary `SRC1` and backup `SRC2`, as if it came from the Elasticsearch poll |
+| **Seeded schedule** | an active schedule window for `BUS1` with primary `SRC1` and backup `SRC2`, as if it came from the events API poll |
 | **Seeded bus state** | a stored state and source for the bus, with deviation times set minutes in the past so each time can be told apart from "now" |
 | **Stub notifier** | captures alerts instead of sending them |
 | **Stub events API** | a local HTTP server that returns a chosen scheduler payload or error status and counts how many calls it received |
-| **Webhook delivery** | posts a scheduler payload into routebeat's webhook handler partway through the unscheduled wait |
-| **Short wait** | `webhook.wait` is 50ms in tests, so waiting and not waiting can be measured reliably |
+| **No-wait bound** | 50ms: a call that shouldn't wait on a recheck must return faster than this |
 
-Each test starts from empty caches. Times are compared exactly when they're seeded, and as "within 2 seconds of now" when routebeat sets them.
+Each test starts from an empty schedule store and bus cache. Times are compared exactly when they're seeded, and as "within 2 seconds of now" when routebeat sets them.
 
 Each case can check any of the following:
 - the `schedule.*` fields (status, routing source, primary, backup, matched);
 - every alert: whether it's `previous` or `current`, Error or Correction, its status, source, start and end;
 - the counter changes for the tag;
 - the stored bus state and source afterwards;
-- whether the unscheduled recheck waited, and how many events API calls it made.
+- whether the unscheduled recheck returned without waiting, how many events API calls it made, and whether the schedule store changed.
 
 ## Coverage map
 
 | Area | Tests |
 |---|---|
 | Event fields, namesets, labels | `TestCreateEventFromEdgeBuild` |
-| Regular cache vs hot cache | `TestCreateEventFromEdgeScheduleLookup`, `TestGetBusRoutingFromCaches` |
+| Schedule lookup | `TestCreateEventFromEdgeScheduleLookup`, `TestGetBusRouting` |
 | Primary / Backup / Zorro / TDA / Unscheduled | `TestCreateEventFromEdgeStateResolution`, `TestMatchScheduledState`, `TestResolveRoutingState` |
 | Unknown (blank source) | `TestCreateEventFromEdgeBlankSource` |
 | Transitions, alerts, counters, deviation times | `TestCreateEventFromEdgeTransitions`, `TestCreateEventFromEdgeNotificationNoChange`, `TestCreateEventFromEdgeSequence` |
-| Unscheduled recheck | `TestCreateEventFromEdgeUnscheduledRecheck`, `TestRecheckHotRoute`, `TestIsUnscheduledTransition` |
+| Unscheduled recheck | `TestCreateEventFromEdgeUnscheduledRecheck`, `TestRecheckRoute`, `TestRecheckRouteLogs`, `TestIsUnscheduledTransition`, `TestRefreshOutput` |
 | Self-correction | `TestCreateEventFromEdgeQueryDefunct` |
-| Scheduler payloads and hot cache | `TestParseSchedulerEvents`, `TestSchedulerWebhookResponses`, `TestSchedulerAPGEventBusRouting`, `TestMergeBusRouting`, `TestApplySchedulerEvents`, `TestPruneScheduleHotCache`, `TestSaveCaches`, `TestEventsAPIRefreshUpdatesHotCache`, `TestEventsAPIRefreshUpdatesMultipleOutputs` |
-| Real lab data | `TestRealSchedulerEvents*`, `TestRealRoutebeatReplay`, `TestRealNotificationSequence` |
+| Schedule poll and persistence | `TestPollSchedule`, `TestRelativeTime`, `TestSaveCaches` |
+| Scheduler payloads, routing windows, schedule store | `schedule` package: `TestParseEvents`, `TestEventRouting`, `TestBuildRoutes`, `TestMergeRouteLists`, `TestMergeBusRouting`, `TestStore*` |
+| Real lab data | `TestRealEvents*`, `TestBuildRoutesRealPair` (`schedule` package), `TestRealRoutebeatReplay`, `TestRealNotificationSequence` |
 
 All statements in the deviation engine and the unscheduled recheck are covered.
 
@@ -97,14 +98,11 @@ All statements in the deviation engine and the unscheduled recheck are covered.
 | Case | Expected |
 |---|---|
 | not found | `matched: false`, `routingSource: none`, no counters, no bus state created |
-| expired ES entry with end date validation | not found |
-| expired ES entry without end date validation | found, `routingSource: cache` (development setting) |
-| active ES entry | `routingSource: cache` with the ES primary and backup |
-| active hot entry with webhook enabled | `routingSource: hotcache` with the hot primary and backup, overriding ES |
-| active hot entry ignored when webhook and events API are off | `routingSource: cache`; the hot cache isn't used |
-| expired hot entry falls back to ES | `routingSource: cache` |
+| expired entry with end date validation | not found |
+| expired entry without end date validation | found, `routingSource: cache` (development setting) |
+| active entry | `routingSource: cache` with the stored primary and backup |
 
-**`TestGetBusRoutingFromCaches`** tests the same rules on the lookup alone: cache only, hot cache wins, hot cache disabled, hot cache only, not found, and expired cache entry.
+**`TestGetBusRouting`** tests the same rules on the lookup alone: active, not found, and expired with and without end date validation.
 
 ## Routing state resolution
 
@@ -135,7 +133,7 @@ All statements in the deviation engine and the unscheduled recheck are covered.
 | physical source only | no subscribed source means no state label |
 | subscribed source without a Broadview nameset | the default label is blank, so the state is unknown |
 | zorro tag does not apply without a label | fallback tags don't turn a blank label into `Zorro` |
-| no recheck with the hot cache enabled | no wait, no events API call |
+| no recheck with the events api enabled | no wait, no events API call |
 
 This replaces an older behaviour in which a blank source matched a blank schedule backup and was reported as `Backup`. That behaviour was found in real lab data.
 
@@ -147,7 +145,7 @@ This replaces an older behaviour in which a blank source matched a blank schedul
 |---|---|
 | same state updates the source label | Primary → Primary on a new source: the stored source is updated, `deviationStartTime: -`, no alerts |
 | same state reports the existing transition time | Backup → Backup: `deviationStartTime` is the seeded transition time |
-| unscheduled to unscheduled does not recheck | no wait and no events API call, even with the hot cache enabled |
+| unscheduled to unscheduled does not recheck | no wait and no events API call, even with the events API configured |
 
 ## State transitions and alerts
 
@@ -163,58 +161,49 @@ This replaces an older behaviour in which a blank source matched a blank schedul
 | primary to tda | `previous` Primary + `current` TDA (Error) | Primary −1, TDA +1 | start now |
 | backup to primary reports when the bus first left primary | `previous` Backup + `current` Primary (Correction) | Backup −1, Primary +1 | start = first departure, end = now; deviation cleared |
 | backup to primary on the first deviation reports the last transition | as above | as above | start = last transition (see [known behaviour](#known-behaviour-pinned-by-the-tests)) |
-| primary to unscheduled with the hot cache disabled | `previous` Primary + `current` UnscheduledAudio (Error) | Primary −1, Unscheduled +1 | no recheck wait |
+| primary to unscheduled without the events api | `previous` Primary + `current` UnscheduledAudio (Error) | Primary −1, Unscheduled +1 | no recheck wait |
 | new bus to unscheduled does not recheck | `current` UnscheduledAudio | Unscheduled +1 | no wait, no events API call |
 
 ## Unscheduled recheck
 
-**`TestCreateEventFromEdgeUnscheduledRecheck`** sends a notification that takes a known bus to an unscheduled source (`SRC_NEW`) with the hot cache enabled. Each case checks whether the recheck saves the bus from `UnscheduledAudio`, and which alerts go out.
+**`TestCreateEventFromEdgeUnscheduledRecheck`** sends a notification that takes a known bus to an unscheduled source (`SRC_NEW`). The schedule store holds the polled `SRC1`/`SRC2` window. Each case checks whether the events API refresh saves the bus from `UnscheduledAudio`, which alerts go out, that the call never waits, and how many API calls were made.
 
 | Case | Setup | Result |
 |---|---|---|
-| webhook success with no transition | bus on Primary; the webhook posts `MAIN SRC_NEW` during the wait | `Primary` from `hotcache`; no alerts |
-| webhook success as backup is a transition | the webhook posts `BACKUP SRC_NEW` | `Backup` from `hotcache`; Primary → Backup Error alerts |
-| events API success with a correction | bus on Backup; the API returns `MAIN SRC_NEW` | `Primary` from `hotcache`; Correction alerts; no wait; 1 API call |
-| events API success returns before the webhook wait | API match with the webhook also on | returns without waiting |
-| webhook only failure | nothing arrives | `UnscheduledAudio` from `cache`; waited the full time; Error alerts |
-| events API error without webhook | API returns 500 | `UnscheduledAudio`; no wait; 1 API call |
-| events API error falls back to the webhook | API returns 500, then the webhook posts `MAIN SRC_NEW` | `Primary` from `hotcache` |
-| events API returns a different source | API returns `MAIN OTHER_SRC` | `UnscheduledAudio`; falls through to the webhook wait |
-| events API returns an inactive window | API returns `MAIN SRC_NEW` with an expired window | `UnscheduledAudio`; the event isn't cached |
-| events API returns untagged and non-apg events | events with no `MAIN`/`BACKUP` tag and other tasks | `UnscheduledAudio`; the hot cache stays empty |
-| hot entry present for a different source | hot cache already holds `MAIN OTHER_SRC` | `UnscheduledAudio`; the schedule shown is the hot one |
-| expired hot entry for the source | hot cache holds `MAIN SRC_NEW` with a past window | `UnscheduledAudio` from `cache` |
+| events API success with no transition | bus on Primary; the API returns `MAIN SRC_NEW` | `Primary` from `recheck`, with the polled backup kept (`SRC2`); no alerts |
+| events API success as backup is a transition | the API returns `BACKUP SRC_NEW` | `Backup` from `recheck`, with the polled primary kept (`SRC1`); Primary → Backup Error alerts |
+| events API success with a correction | bus on Backup; the API returns `MAIN SRC_NEW` | `Primary` from `recheck`; Correction alerts with the first departure and an end time; 1 API call |
+| no events API | no client configured | `UnscheduledAudio` from `cache`; the store is unchanged |
+| events API error | API returns 500 | `UnscheduledAudio` from `cache`; 1 API call; the store is unchanged |
+| events API returns a different source | API returns `MAIN OTHER_SRC` | `UnscheduledAudio`; the event reports the polled routing it was decided against |
+| events API returns an inactive window | API returns `MAIN SRC_NEW` with an expired window | `UnscheduledAudio`; the window isn't stored |
+| events API returns untagged and non-apg events | events with no `MAIN`/`BACKUP` tag and other tasks | `UnscheduledAudio`; the store is unchanged |
 
-**`TestRecheckHotRoute`** tests the recheck on its own:
+**`TestRecheckRoute`** tests the recheck on its own:
 
 | Case | Result |
 |---|---|
-| webhook only waits | waits the full time |
-| API match returns without waiting | 1 call, no wait |
-| API only does not wait | 1 call, no wait |
-| API failure falls back to the webhook wait | 1 call, then waits |
-| API failure without webhook does not wait | accepts unscheduled immediately |
-| webhook data arriving during the wait is used | a payload posted halfway through the wait is picked up |
-| events API delay pauses before the request | the stub API only gets the new event halfway through `events_api.delay`; the request is sent after the delay, so the new event is found and the bus is `Primary` from `hotcache` |
-| events API delay match skips the webhook wait | with a delay and a long webhook wait, a match after the delay returns without waiting for the webhook |
+| no events API | accepts unscheduled immediately, keeping the original routing and source |
+| API match | 1 call; `Primary` from `recheck` with the refreshed routing |
+| API failure | 1 call; accepts unscheduled with the original routing and source |
+| events API delay pauses before the request | the stub API only gets the new event halfway through `events_api.delay`; the request is sent after the delay, so the new event is found and the bus is `Primary` from `recheck` |
 
-**`TestRecheckHotRouteLogs`** captures the `ScheduleHotCache` (hit) and `ScheduleHotCacheMiss` debug output and checks the exact log lines in order. Every line includes the destination, the source, the check, the reason or state, and the hot primary and backup:
+**`TestRecheckRouteLogs`** captures the `ScheduleRecheck` (hit) and `ScheduleRecheckMiss` debug output and checks the exact log line. Every line includes the destination, the source, the reason or state, and the primary and backup of the active window:
 
-| Case | Expected log lines |
+| Case | Expected log line |
 |---|---|
-| events API with no routing | miss: `Check:events_api Reason:no_active_routing`, blank primary and backup |
-| events API and webhook wait with a different source | two misses, `Check:events_api` then `Check:webhook_wait`, both `Reason:source_not_scheduled` with the hot primary and backup |
-| events API hit | hit: `Check:events_api State:Primary` with the hot primary and backup; no miss |
-| events API miss then webhook wait hit | miss: `Check:events_api Reason:no_active_routing`, then hit: `Check:webhook_wait State:Backup` |
+| no routing | miss: `Reason:no_active_routing`, blank primary and backup |
+| refreshed routing with a different source | miss: `Reason:source_not_scheduled` with the refreshed primary and backup |
+| refresh error checks the polled routing | miss: `Reason:source_not_scheduled` with the polled primary and backup |
+| hit | hit: `State:Primary` with the refreshed primary and backup |
 
 **`TestIsUnscheduledTransition`** checks when a recheck is triggered: only for a notification that moves a known bus into `UnscheduledAudio`. It isn't triggered for queries, for a bus with no earlier state, or for a bus that was already unscheduled.
 
-**`TestEventsAPIRefreshUpdatesHotCache`** checks that an events API response with `MAIN`, `BACKUP` and unrelated events fills in the hot cache's primary and backup.
-
-**`TestEventsAPIRefreshUpdatesMultipleOutputs`** checks that a response for one bus can carry events for other buses, and that all of them are merged into the hot cache. The request is for `BUS1`:
+**`TestRefreshOutput`** checks the refresh request (`output=BUS1&task=apg`) and that a response for one bus can carry events for other buses, all merged into the store:
 - `BUS1` gets its primary and backup, even though the two events aren't next to each other in the list.
 - `BUS2` gets a new primary and keeps the backup it already had, because the windows overlap.
 - `BUS3` gets a backup only.
+- a failing API returns an error.
 
 ## Self-correction (defunct state)
 
@@ -227,14 +216,14 @@ This replaces an older behaviour in which a blank source matched a blank schedul
 | primary corrected to backup on the fourth query | **Queries 1–3:** no alerts. **Query 4:** the state is corrected to Backup and a new deviation starts now; Error alerts are sent, the `previous` one starting at `-`; there's no `deviationEndTime`. |
 | same state reports the transition time | a matching query on a deviated bus reports its transition time |
 | same primary state with no transition | a matching query on Primary reports `-` |
-| query does not recheck the hot cache | an unscheduled query result doesn't wait or call the events API |
+| query does not recheck | an unscheduled query result doesn't wait or call the events API |
 
 ## Multi-step sequence
 
 **`TestCreateEventFromEdgeSequence`** follows one bus through a series of notifications and a final query:
 
 1. **Primary → Backup:** Error alerts; the first departure from Primary is recorded.
-2. **Backup → UnscheduledAudio** (hot cache off): Error alerts; the first departure time is kept.
+2. **Backup → UnscheduledAudio** (no events API): Error alerts; the first departure time is kept.
 3. **UnscheduledAudio → Primary:** Correction alerts; `deviationStartTime` is the departure from step 1, not the change in step 2; `deviationEndTime` is now.
 4. **Query on Primary:** `deviationStartTime: -`, no alerts.
 
@@ -244,36 +233,47 @@ Times are moved back between steps, so the test can tell "first departure" apart
 
 **`TestCreateEventFromEdgeNoopNotifier`** runs a Primary → Backup transition with no notifier configured. It checks that there's no failure, that the alerts are still built (with an empty origin host), and that the counters, the bus state and the deviation time are all updated.
 
-## Scheduler events and the hot cache
+## Schedule poll and refresh
 
-These tests cover the payloads that reach the hot cache from the webhook and the events API.
+**`TestPollSchedule`** runs the schedule poll against a stub events API:
 
-**`TestParseSchedulerEvents`** checks payload parsing:
+| Case | What it checks |
+|---|---|
+| builds the store from now and the lookahead | two requests, `start=end=now` then `start=end=now+25m`, both with `task=apg`; `BUS1` gets its folded current window then the upcoming one; a window returned by both requests is stored once; an untagged bus isn't stored; a bus missing from the poll is removed; the event counters are updated |
+| a failed now fetch keeps the previous schedule | no lookahead request is sent and the store is unchanged |
+| a failed lookahead fetch still loads now | the current windows are stored |
+| a refresh during the poll is kept | a bus refreshed while the poll is in flight keeps the refreshed routing; the other buses get the polled routing |
+
+**`TestRelativeTime`** checks that the lookahead is sent as `now+25m`, `now+1h`, `now+45s`, or `now` for zero.
+
+**`TestSaveCaches`** saves the bus cache and the schedule store in a temporary directory and loads them back the way startup does. The bus state is restored, and only the windows that haven't ended come back (expired ones are pruned before saving).
+
+## Schedule package
+
+The `beater/schedule` package holds the event model, the routing windows and the schedule store.
+
+**`TestParseEvents`** checks payload parsing:
 - **Accepted and kept:** a single object; an array; leading whitespace; an array that mixes valid and invalid items (the valid ones are kept).
 - **Accepted but skipped:** non-`apg` objects (including ones shaped differently); `apg` appearing in some field other than `task`; a `task` that isn't a string; an `apg` event that doesn't fit the event format; JSON scalars (string, number, `null`); an empty object or array; an array of scalars.
 - **Rejected as invalid:** an empty body; text that isn't JSON; a malformed array or object; an object with data after it; a malformed item inside an array.
 
-**`TestSchedulerWebhookResponses`** sends 14 payloads end to end through the real webhook handler. Only an empty body, whitespace, non-JSON text or malformed JSON gets **400**. Inactive events, untagged events, events with bad dates, events that don't fit the format, and non-`apg` events all get **202** and are skipped silently.
+**`TestEventRouting`** checks how one scheduler event becomes a routing window: `MAIN` sets the primary and `BACKUP` sets the backup; an event with neither tag is rejected; a window in the past is still built (the store decides what's active); a bad date is rejected.
 
-**`TestSchedulerAPGEventBusRouting`** checks how one scheduler event becomes a routing:
-- `MAIN` sets the primary and `BACKUP` sets the backup;
-- an event with neither tag is rejected;
-- events before or after their window are rejected, and the window edges count as active;
-- a bad date is rejected.
+**`TestIsActive`** checks that window edges count as active and that a missing start or end is never active.
 
-**`TestMergeBusRouting`** checks how an event combines with what's already stored: a new bus gets a copy, overlapping windows merge (a `BACKUP` event fills in alongside an existing `MAIN`), and a non-overlapping window replaces the entry.
+**`TestMergeBusRouting`** checks how a window combines with a stored one: a new bus gets a copy, overlapping windows merge (a `BACKUP` fills in alongside an existing `MAIN`), and a non-overlapping window replaces it. Neither input is changed.
 
-**`TestApplySchedulerEvents`** checks how a batch of events updates the hot cache:
-- a `MAIN`/`BACKUP` pair fills in one bus;
-- untagged and inactive events aren't cached, and they're counted as such;
-- a later `MAIN`-only update replaces the primary but keeps the backup;
-- an entry a reader already holds is never changed in place.
+**`TestBuildRoutes`** groups an ungrouped list of events: `MAIN` and `BACKUP` events with the same window fold into one routing even when they aren't next to each other; back-to-back windows stay separate; each bus's windows are sorted; untagged events and bad dates are counted and skipped. **`TestBuildRoutesRealPair`** does the same with the real `MAIN`/`BACKUP` pair.
 
-**`TestSchedulerHookCallbackConcurrentReads`** writes to the hot cache and reads it at the same time, under the race detector, to prove the hot cache is safe to share.
+**`TestMergeRouteLists`** merges the now and lookahead results: a duplicate window is stored once, nil and dateless routings are dropped, and the inputs aren't changed.
 
-**`TestSaveCaches`** saves the caches in a temporary directory and loads them back the way startup does. With the hot cache enabled, both files are written: the bus state is restored and only active hot cache entries come back (expired ones are pruned before saving). With the hot cache disabled, only the bus cache file is written.
-
-**`TestPruneScheduleHotCache`** checks that expired, empty and dateless entries are removed, both in memory and after the hot cache is reloaded from file. Active entries are kept.
+| Store test | What it checks |
+|---|---|
+| `TestStoreActive` | the window active now is returned; the upcoming window becomes active when the current one ends; an expired window isn't returned unless end dates aren't validated |
+| `TestStoreReplace` | a poll replaces every bus, removes buses missing from it, and keeps a bus refreshed after the poll began |
+| `TestStoreUpsert` | an identical window keeps the other source; an advanced (overlapping) window merges over the stored one; a separate window is inserted in order; a new bus is added; expired, dateless and nil windows aren't applied; a routing a reader already holds is never changed in place |
+| `TestStorePrune` | expired windows and buses left empty are removed, both in memory and after a save and load |
+| `TestStoreConcurrentAccess` | polls, refreshes, pruning and lookups at the same time, under the race detector |
 
 ## Real lab data replays
 
@@ -287,10 +287,10 @@ These tests use real Magnum Scheduler events and routebeat documents captured fr
 
 | Test | What it checks |
 |---|---|
-| `TestRealSchedulerEventsDecode` | every real event decodes, with the window as a UTC date string |
-| `TestRealSchedulerEventsBusRouting` | each real tag combination gives the right primary or backup, for example `MAIN`+`EXTERNAL`+`PxP` → primary |
-| `TestRealSchedulerEventsMixedPayload` | a real mixed payload keeps only the `apg` events; `silence`, `xmuds`, `route` and the schedule document are dropped |
-| `TestRealSchedulerEventsPairUpdatesHotCache` | the real `MAIN`/`BACKUP` pair fills the hot cache whether it's sent in one payload, in two separate payloads (merged), or as an events API response |
+| `TestRealEventsDecode` (`schedule`) | every real event decodes, with the window as a UTC date string |
+| `TestRealEventsRouting` (`schedule`) | each real tag combination gives the right primary or backup, for example `MAIN`+`EXTERNAL`+`PxP` → primary |
+| `TestRealEventsMixedPayload` (`schedule`) | a real mixed payload keeps only the `apg` events; `silence`, `xmuds`, `route` and the schedule document are dropped |
+| `TestBuildRoutesRealPair` (`schedule`) | the real `MAIN`/`BACKUP` pair folds into one window with the primary and backup |
 | `TestRealRoutebeatReplay` | each recorded destination is rebuilt and checked again: the labels, status, schedule primary and backup, and counters must match what was recorded. The two blank-source events recorded as `Backup` by the older build are now expected to be `unknown`. |
 | `TestRealNotificationSequence` | replays each bus's recorded notifications in order. Every step must give the recorded status; every change must send the right `previous`/`current` alerts (Error, or Correction on a return to Primary, with `deviationEndTime`); steps with no change must send nothing. |
 
@@ -304,11 +304,10 @@ python3 -I beater/testdata/fetch_fixtures.py http://<elasticsearch>:9200
 
 | Package | Tests | What they check |
 |---|---|---|
-| `beater/eventsapi` | `TestNewValidation`, `TestRequestURL`, `TestRefresh` | the URL is required; `{output}` is replaced in the URL, or `?output=` is added; the response body is passed on for processing; errors from processing it are returned; a non-2xx response or a timeout is an error and nothing is processed |
-| `beater/httpserver` | `TestSchedulerEventRouting`, `TestHandleSchedulerEvent`, `TestStart*`, `TestWriteJSON` | only `POST /api/v1/scheduler/events` is routed; 202 / 400 / 405 / 500 responses; the payload reaches processing unchanged and with the request context; the server starts and shuts down cleanly; a port already in use is reported |
+| `beater/eventsapi` | `TestNewValidation`, `TestRequestURL`, `TestEventsAt`, `TestRefreshOutput`, `TestEventsErrors` | the URL is required, needs a scheme and host, and can't use `{output}`; the parameter names default to `start`/`end`/`output`/`task`; the poll and refresh requests carry the right parameters (configurable names, `now+25m` sent as `now%2B25m`, the task filter, existing URL parameters kept) and the configured headers; the response is parsed into `apg` events; a non-2xx response, a malformed body or a timeout is an error; the refresh uses `timeout` and the poll uses `bulk_timeout` |
 | `beater` (logging) | `TestBuildEventsProcessResultsLogs`, `TestEventDestination` | a notification batch's summary log lists its destinations by mapping label (matched and unmatched, not discarded); a query batch's summary has no destinations; without a label the Magnum destination name is used |
 | `beater` (logging) | `TestProcessResultsSelector` | the `ProcessResults.Query` and `ProcessResults.Notifications` sub selectors each enable only their event type; `ProcessResults.*` and `ProcessResults` enable both; `*` logs each under its own sub selector; unrelated selectors log nothing |
-| `config` | config tests | defaults and parsing of the `webhook` and `events_api` options, including `events_api.delay` (default `0s`) |
+| `config` | config tests | defaults and parsing of the `schedule` and `events_api` options (including `events_api.delay`, default `0s`, and an empty `task`), and that old `elasticsearch` and `webhook` blocks don't break parsing |
 
 ## Known behaviour pinned by the tests
 

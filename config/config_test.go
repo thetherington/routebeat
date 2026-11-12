@@ -10,44 +10,70 @@ import (
 	"github.com/elastic/elastic-agent-libs/config"
 )
 
-func TestWebhookAndEventsAPIDefaults(t *testing.T) {
+func TestScheduleAndEventsAPIDefaults(t *testing.T) {
 	c := DefaultConfig
 
 	if err := config.MustNewConfigFrom(map[string]any{}).Unpack(&c); err != nil {
 		t.Fatal(err)
 	}
 
-	if !c.Webhook.Enabled || c.Webhook.Port != 8082 || c.Webhook.Wait != 5*time.Second {
-		t.Errorf("webhook defaults = %+v", c.Webhook)
+	if c.Schedule.Period != 5*time.Minute || c.Schedule.Lookahead != 25*time.Minute ||
+		c.Schedule.Dev.LoadCache || !c.Schedule.Dev.ValidateEndDate {
+		t.Errorf("schedule defaults = %+v", c.Schedule)
 	}
 
-	if c.EventsAPI.Url != "" || c.EventsAPI.Timeout != 3*time.Second || c.EventsAPI.Delay != 0 {
-		t.Errorf("events api defaults = %+v", c.EventsAPI)
+	want := EventsAPI{
+		Timeout:     3 * time.Second,
+		BulkTimeout: 15 * time.Second,
+		StartParam:  "start",
+		EndParam:    "end",
+		OutputParam: "output",
+		TaskParam:   "task",
+		Task:        "apg",
+	}
+
+	got := c.EventsAPI
+	if got.Url != "" || got.Delay != 0 || len(got.Headers) != 0 || got.Timeout != want.Timeout ||
+		got.BulkTimeout != want.BulkTimeout || got.StartParam != want.StartParam || got.EndParam != want.EndParam ||
+		got.OutputParam != want.OutputParam || got.TaskParam != want.TaskParam || got.Task != want.Task {
+		t.Errorf("events api defaults = %+v", got)
 	}
 }
 
-func TestWebhookAndEventsAPIUnpack(t *testing.T) {
+func TestScheduleAndEventsAPIUnpack(t *testing.T) {
 	c := DefaultConfig
 
 	raw := config.MustNewConfigFrom(map[string]any{
-		"webhook": map[string]any{"enabled": false, "wait": "2s"},
-		"events_api": map[string]any{
-			"url":     "http://host/api?output={output}",
-			"delay":   "500ms",
-			"headers": map[string]any{"Authorization": "Bearer x"},
+		"schedule": map[string]any{
+			"period":    "1m",
+			"lookahead": "30m",
+			"dev":       map[string]any{"validate_end_date": false},
 		},
+		"events_api": map[string]any{
+			"url":          "http://host/api/v1/scheduler/events",
+			"delay":        "500ms",
+			"bulk_timeout": "20s",
+			"start_param":  "start_date",
+			"task":         "",
+			"headers":      map[string]any{"Authorization": "Bearer x"},
+		},
+		// removed blocks in an old config don't break the unpack
+		"elasticsearch": map[string]any{"address": "http://127.0.0.1:9200", "period": "5m"},
+		"webhook":       map[string]any{"enabled": true, "port": 8082},
 	})
 
 	if err := raw.Unpack(&c); err != nil {
 		t.Fatal(err)
 	}
 
-	if c.Webhook.Enabled || c.Webhook.Port != 8082 || c.Webhook.Wait != 2*time.Second {
-		t.Errorf("webhook = %+v", c.Webhook)
+	if c.Schedule.Period != time.Minute || c.Schedule.Lookahead != 30*time.Minute || c.Schedule.Dev.ValidateEndDate {
+		t.Errorf("schedule = %+v", c.Schedule)
 	}
 
-	if c.EventsAPI.Url != "http://host/api?output={output}" || c.EventsAPI.Delay != 500*time.Millisecond ||
-		c.EventsAPI.Headers["Authorization"] != "Bearer x" {
-		t.Errorf("events api = %+v", c.EventsAPI)
+	e := c.EventsAPI
+	if e.Url != "http://host/api/v1/scheduler/events" || e.Delay != 500*time.Millisecond || e.BulkTimeout != 20*time.Second ||
+		e.Timeout != 3*time.Second || e.StartParam != "start_date" || e.EndParam != "end" || e.Task != "" ||
+		e.Headers["Authorization"] != "Bearer x" {
+		t.Errorf("events api = %+v", e)
 	}
 }

@@ -17,14 +17,14 @@ routebeat:
     default: ""
   
   # TDA default source
-  tda: "tda"
+  tda: ""
 
   # Tag for the Zorro sources.
-  zorro: "ZORRO"
+  zorro: ""
 
   # Magnum API
   api:
-    url: "https://129.213.88.5/graphql/v1.1"
+    url: "https://129.153.131.121/graphql/v1.1"
     
     # Get route notifications via the subscriptions
     notifications: true
@@ -34,81 +34,40 @@ routebeat:
 
     # Serialize GraphQL polling queries across tags to reduce API load
     serialize_queries: false
-
+    
     # Magnum OIDC Authentication
     auth:
       client_id: "insite-poller"
-      client_secret: "gpJ2WSbjBOD1HoZxpTYGaqKdqeBD1mll"
-      token_url: "https://129.213.88.5/auth/realms/magnum/protocol/openid-connect/token"
+      client_secret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd"
+      token_url: "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token"
 
     # Defines how long to wait for the API to respond before timing out
     timeout: 10s
 
     # Defines the idle duration after which the subscription client will be closed to test reconnect logic
-    sub_reconnect_idle: 31m
+    sub_reconnect_idle: 120m
 
-  elasticsearch:
-    # Elasticsearch server node url
-    address: "http://10.9.0.69:9200"
-
-    # Index pattern to query for scheduler data
-    index: "log-magnum-scheduler-*"
-
-    # Defines how often the schedule event params is fetched 
+  # Schedule store, rebuilt from the events api every period
+  schedule:
     period: 5m
 
-    # (optional) Authentication credentials - either API key or username/password.
-    # api_key takes precedence when both are set
-    #api_key: "id:api_key"
-    #username: "elastic"
-    #password: "changeme"
+    # also fetch the events active at now+lookahead, so upcoming windows are stored before they start
+    lookahead: 25m
 
-    # (optional) TLS settings for https addresses
-    #ssl:
-      # PEM encoded CA certificate used to verify the server, in addition to the system CAs
-      #ca_cert: "/etc/routebeat/ca.crt"
-
-      # Skip server certificate verification (not recommended)
-      #insecure_skip_verify: false
-
-    # developer settings to save/load cache
-    dev:
-      # load a local copy of the schedule cache (scheduleCache.gob)
-      load_cache: false
-
-      # save a the schedule cache on shutdown (scheduleCache.gob)
-      save_cache: false 
-      
-      # disable validating the end date (default true)
-      validate_end_date: true
-
-  # HTTP server that receives scheduler events and updates the schedule hot cache
-  webhook:
-    enabled: true
-    port: 8082
-
-    # time to wait for webhook data when a destination goes unscheduled
-    wait: 5s
-
-  # (optional) API queried on demand when a destination goes unscheduled to update the schedule hot cache
-  # {output} in the url is replaced with the destination, otherwise it's added as the "output" query parameter
+  # Scheduler events api (required). Polled for the schedule, and queried for one destination when it goes unscheduled
   events_api:
-    url: "http://localhost:8090/events/{output}"
-    timeout: 3s
+    url: "http://localhost:8090/events"
+    #task: apg
+    #timeout: 3s
+    #bulk_timeout: 15s
     #delay: 0s
     #headers:
       #Authorization: "Bearer <token>"
 
   notifiers:
     auto:
-      host: "10.9.0.69"
-      types: ["notification-elastic", "notification-http"]
-
-    # manual:
-      # - node: 10.9.0.69
-      #   port: 19708
-      # - node: 10.9.0.69
-      #   port: 19709
+      host: "127.0.0.1"
+      types: ["notification-elastic"]
 # ================================== General ===================================
 
 # The name of the shipper that publishes the network data. It can be used to group
@@ -173,11 +132,11 @@ setup.kibana:
 # ---------------------------- Elasticsearch Output ----------------------------
 output.elasticsearch:
   # Array of hosts to connect to.
-  hosts: ["10.9.0.69:9200"]
+  hosts: ["localhost:9200"]
 
   # Performance preset - one of "balanced", "throughput", "scale",
   # "latency", or "custom".
-  #preset: balanced
+  preset: balanced
 
   # Protocol - either `http` (default) or `https`.
   #protocol: "https"
@@ -188,9 +147,9 @@ output.elasticsearch:
   #password: "changeme"
 
 # ------------------------------ Logstash Output -------------------------------
-# output.logstash:
+#output.logstash:
   # The Logstash hosts
-  # hosts: ["10.9.0.69:5058"]
+  #hosts: ["localhost:5044"]
 
   # Optional SSL. By default is off.
   # List of root certificates for HTTPS server verifications

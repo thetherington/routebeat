@@ -1,25 +1,19 @@
 package beater
 
 import (
-	"context"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/mapstr"
-	insite "github.com/thetherington/routebeat/beater/analytics"
 	"github.com/thetherington/routebeat/beater/notify"
+	"github.com/thetherington/routebeat/beater/schedule"
 )
-
-// hotCacheEnabled reports whether anything can update the scheduleHotCache (webhook or events api)
-func (bt *routebeat) hotCacheEnabled() bool {
-	return bt.config.Webhook.Enabled || bt.eventsAPI != nil
-}
 
 // matchScheduledState returns Primary or Backup if the source label matches the routing, otherwise Unsched.
 // blank labels never match
-func matchScheduledState(srcLabel string, routing *insite.BusRouting) RoutingState {
+func matchScheduledState(srcLabel string, routing *schedule.BusRouting) RoutingState {
 	switch {
 	case srcLabel == "":
 		return Unsched
@@ -36,7 +30,7 @@ func matchScheduledState(srcLabel string, routing *insite.BusRouting) RoutingSta
 
 // resolveRoutingState maps the source to Primary/Backup by label, then Zorro/TDA by source tag, otherwise Unsched.
 // a blank source label can't be resolved and returns Unknown
-func (bt *routebeat) resolveRoutingState(srcLabel string, srcTags []string, routing *insite.BusRouting) RoutingState {
+func (bt *routebeat) resolveRoutingState(srcLabel string, srcTags []string, routing *schedule.BusRouting) RoutingState {
 	if srcLabel == "" {
 		return Unknown
 	}
@@ -57,7 +51,7 @@ func (bt *routebeat) resolveRoutingState(srcLabel string, srcTags []string, rout
 }
 
 // scheduleFields builds the "schedule" group of the event
-func scheduleFields(buscode string, state RoutingState, routing *insite.BusRouting, source RoutingSource) mapstr.M {
+func scheduleFields(buscode string, state RoutingState, routing *schedule.BusRouting, source RoutingSource) mapstr.M {
 	return mapstr.M{
 		"buscode":       buscode,
 		"status":        state.String(),
@@ -132,7 +126,7 @@ func transitionNotifications(tr stateTransition) []notify.Notification {
 }
 
 // isUnscheduledTransition reports a notification that moved a known bus into the Unsched state.
-// there's a chance of an advance event or a FF, so the hot cache may have a newer routing
+// there's a chance of an advance event or a FF, so the events api may have a newer routing
 func isUnscheduledTransition(eventType EventType, prevState, currentState RoutingState) bool {
 	return eventType == Notification &&
 		currentState == Unsched &&
@@ -140,71 +134,47 @@ func isUnscheduledTransition(eventType EventType, prevState, currentState Routin
 		prevState != Unknown
 }
 
-// recheck steps logged under the ScheduleHotCache (hit) and ScheduleHotCacheMiss debug selectors,
-// and the hot cache miss reasons
+// recheck miss reasons logged under the ScheduleRecheckMiss debug selector
 const (
-	hotCheckEventsAPI   = "events_api"
-	hotCheckWebhookWait = "webhook_wait"
-
-	hotMissNoRouting = "no_active_routing"    // no hot cache entry, or the entry isn't active now
-	hotMissNoMatch   = "source_not_scheduled" // active entry, but the source is neither its primary nor backup
+	recheckMissNoRouting = "no_active_routing"    // no active routing for the destination after the refresh
+	recheckMissNoMatch   = "source_not_scheduled" // active routing, but the source is neither its primary nor backup
 )
 
-// recheckHotRoute refreshes the hot cache from the events api and/or waits for webhook data, then
-// re-evaluates the source against the hot route. returns the original Unsched state, routing and source
-// if the hot cache has no matching routing
-func (bt *routebeat) recheckHotRoute(dstLabel, srcLabel string, routing *insite.BusRouting, source RoutingSource) (RoutingState, *insite.BusRouting, RoutingSource) {
-	now := time.Now()
-
-	// check is the recheck step that looked at the hot cache: events_api or webhook_wait
-	matchHotRoute := func(check string) (RoutingState, *insite.BusRouting, bool) {
-		r, ok := GetScheduleHotRoute(dstLabel, now)
-		if !ok {
-			logp.Debug("ScheduleHotCacheMiss", "Hot cache miss Destination:%s Source:%s Check:%s Reason:%s Primary: Backup:",
-				dstLabel, srcLabel, check, hotMissNoRouting)
-
-			return Unsched, nil, false
-		}
-
-		state := matchScheduledState(srcLabel, r)
-		if state == Unsched {
-			logp.Debug("ScheduleHotCacheMiss", "Hot cache miss Destination:%s Source:%s Check:%s Reason:%s Primary:%s Backup:%s",
-				dstLabel, srcLabel, check, hotMissNoMatch, r.Pri, r.Sec)
-
-			return Unsched, nil, false
-		}
-
-		logp.Debug("ScheduleHotCache", "Hot cache hit Destination:%s Source:%s Check:%s State:%s Primary:%s Backup:%s",
-			dstLabel, srcLabel, check, state, r.Pri, r.Sec)
-
-		return state, r, true
+// recheckRoute refreshes the destination's schedule from the events api, then re-evaluates the source
+// against the refreshed routing. returns the original Unsched state, routing and source if the refreshed
+// routing doesn't match the source
+func (bt *routebeat) recheckRoute(dstLabel, srcLabel string, routing *schedule.BusRouting, source RoutingSource) (RoutingState, *schedule.BusRouting, RoutingSource) {
+	if bt.eventsAPI == nil {
+		return Unsched, routing, source
 	}
 
-	// fetch the latest scheduler events for the destination from the events api.
-	// the response payload is applied to the hot cache by the SchedulerHookCallback
-	if bt.eventsAPI != nil {
-		// optional pause in case the api has latency receiving new scheduler data
-		if bt.config.EventsAPI.Delay > 0 {
-			time.Sleep(bt.config.EventsAPI.Delay)
-		}
-
-		if err := bt.eventsAPI.Refresh(context.Background(), dstLabel); err != nil {
-			logp.Warn("events api refresh failed for Destination:%s: %v", dstLabel, err)
-		}
-
-		if state, r, ok := matchHotRoute(hotCheckEventsAPI); ok {
-			return state, r, SourceHotCache
-		}
+	// optional pause in case the api has latency receiving new scheduler data
+	if bt.config.EventsAPI.Delay > 0 {
+		time.Sleep(bt.config.EventsAPI.Delay)
 	}
 
-	// wait to allow time for the hot cache to be updated by the webhook
-	if bt.config.Webhook.Enabled && bt.config.Webhook.Wait > 0 {
-		time.Sleep(bt.config.Webhook.Wait)
-
-		if state, r, ok := matchHotRoute(hotCheckWebhookWait); ok {
-			return state, r, SourceHotCache
-		}
+	if err := bt.refreshOutput(dstLabel); err != nil {
+		logp.Warn("events api refresh failed for Destination:%s: %v", dstLabel, err)
 	}
 
-	return Unsched, routing, source
+	r, ok := scheduleStore.Active(dstLabel, time.Now(), bt.config.Schedule.Dev.ValidateEndDate)
+	if !ok {
+		logp.Debug("ScheduleRecheckMiss", "Recheck miss Destination:%s Source:%s Reason:%s Primary: Backup:",
+			dstLabel, srcLabel, recheckMissNoRouting)
+
+		return Unsched, routing, source
+	}
+
+	state := matchScheduledState(srcLabel, r)
+	if state == Unsched {
+		logp.Debug("ScheduleRecheckMiss", "Recheck miss Destination:%s Source:%s Reason:%s Primary:%s Backup:%s",
+			dstLabel, srcLabel, recheckMissNoMatch, r.Pri, r.Sec)
+
+		return Unsched, routing, source
+	}
+
+	logp.Debug("ScheduleRecheck", "Recheck hit Destination:%s Source:%s State:%s Primary:%s Backup:%s",
+		dstLabel, srcLabel, state, r.Pri, r.Sec)
+
+	return state, r, SourceRecheck
 }

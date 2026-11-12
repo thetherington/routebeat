@@ -56,19 +56,19 @@ func (rs RoutingState) String() string {
 	return routingName[rs]
 }
 
-// RoutingSource is a small enum for which cache supplied the schedule routing
+// RoutingSource is a small enum for how the schedule routing was found
 type RoutingSource int
 
 const (
-	SourceNone     RoutingSource = iota
-	SourceCache                  // scheduleCache (elasticsearch poll)
-	SourceHotCache               // scheduleHotCache (webhook / events api)
+	SourceNone    RoutingSource = iota
+	SourceCache                 // schedule store (events api poll)
+	SourceRecheck               // schedule store after an events api refresh of the destination (unscheduled recheck)
 )
 
 var routingSourceName = map[RoutingSource]string{
-	SourceNone:     "none",
-	SourceCache:    "cache",
-	SourceHotCache: "hotcache",
+	SourceNone:    "none",
+	SourceCache:   "cache",
+	SourceRecheck: "recheck",
 }
 
 func (rs RoutingSource) String() string {

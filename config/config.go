@@ -27,25 +27,15 @@ type Mapping struct {
 }
 
 type Developer struct {
-	LoadCache       bool `config:"load_cache"`
-	SaveCache       bool `config:"save_cache"`
-	ValidateEndDate bool `config:"validate_end_date"`
+	LoadCache       bool `config:"load_cache"`        // use the saved schedule store and skip the events api poll
+	ValidateEndDate bool `config:"validate_end_date"` // only use schedule windows that are active now
 }
 
-type Elasticsearch struct {
-	Address  string        `config:"address"`
-	Index    string        `config:"index"`
-	Username string        `config:"username"`
-	Password string        `config:"password"`
-	APIKey   string        `config:"api_key"`
-	SSL      ESSSL         `config:"ssl"`
-	Period   time.Duration `config:"period"`
-	Dev      Developer     `config:"dev"`
-}
-
-type ESSSL struct {
-	CACert             string `config:"ca_cert"`
-	InsecureSkipVerify bool   `config:"insecure_skip_verify"`
+// Schedule controls the events api poll that builds the schedule store
+type Schedule struct {
+	Period    time.Duration `config:"period"`    // how often all events are fetched
+	Lookahead time.Duration `config:"lookahead"` // second fetch at now+lookahead for the upcoming windows
+	Dev       Developer     `config:"dev"`
 }
 
 type Notifier struct {
@@ -65,17 +55,19 @@ type NotifierAuto struct {
 	NotifierTypes []string `config:"types"`
 }
 
-type Webhook struct {
-	Enabled bool          `config:"enabled"`
-	Port    int           `config:"port"`
-	Wait    time.Duration `config:"wait"` // time an unscheduled state waits for webhook data
-}
-
 type EventsAPI struct {
-	Url     string            `config:"url"` // empty url disables the events api
-	Timeout time.Duration     `config:"timeout"`
-	Delay   time.Duration     `config:"delay"` // pause before the request, to allow the api to receive new data
-	Headers map[string]string `config:"headers"`
+	Url         string            `config:"url"`          // required. the schedule source
+	Timeout     time.Duration     `config:"timeout"`      // per-output refresh when a bus goes unscheduled
+	BulkTimeout time.Duration     `config:"bulk_timeout"` // schedule poll of all events
+	Delay       time.Duration     `config:"delay"`        // pause before a refresh, to allow the api to receive new data
+	Headers     map[string]string `config:"headers"`
+
+	// query parameter names, and the task value used to filter the events ("" sends no task filter)
+	StartParam  string `config:"start_param"`
+	EndParam    string `config:"end_param"`
+	OutputParam string `config:"output_param"`
+	TaskParam   string `config:"task_param"`
+	Task        string `config:"task"`
 }
 
 type Config struct {
@@ -83,11 +75,10 @@ type Config struct {
 	Tags      []string      `config:"tags"`
 	Mapping   *Mapping      `config:"mapping"`
 	API       MagnumAPI     `config:"api"`
-	ES        Elasticsearch `config:"elasticsearch"`
+	Schedule  Schedule      `config:"schedule"`
 	Notifiers Notifier      `config:"notifiers"`
 	TDA       string        `config:"tda"`
 	Zorro     string        `config:"zorro"`
-	Webhook   Webhook       `config:"webhook"`
 	EventsAPI EventsAPI     `config:"events_api"`
 }
 
@@ -107,13 +98,11 @@ var DefaultConfig = Config{
 		Timeout:          10 * time.Second,
 		SubReconnectIdle: 120 * time.Minute,
 	},
-	ES: Elasticsearch{
-		Address: "http://127.0.0.1:9200",
-		Index:   "log-magnum-scheduler-*",
-		Period:  5 * time.Minute,
+	Schedule: Schedule{
+		Period:    5 * time.Minute,
+		Lookahead: 25 * time.Minute,
 		Dev: Developer{
 			LoadCache:       false,
-			SaveCache:       false,
 			ValidateEndDate: true,
 		},
 	},
@@ -125,12 +114,13 @@ var DefaultConfig = Config{
 			NotifierTypes: []string{"notification-elastic"},
 		},
 	},
-	Webhook: Webhook{
-		Enabled: true,
-		Port:    8082,
-		Wait:    5 * time.Second,
-	},
 	EventsAPI: EventsAPI{
-		Timeout: 3 * time.Second,
+		Timeout:     3 * time.Second,
+		BulkTimeout: 15 * time.Second,
+		StartParam:  "start",
+		EndParam:    "end",
+		OutputParam: "output",
+		TaskParam:   "task",
+		Task:        "apg",
 	},
 }

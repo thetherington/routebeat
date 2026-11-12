@@ -129,7 +129,7 @@
           type: keyword
           required: false
           description: >
-            Cache that supplied the schedule routing: cache (elasticsearch poll), hotcache (webhook / events api), none (unmatched)
+            How the schedule routing was found: cache (events api schedule poll), recheck (events api refresh of the destination when it went unscheduled), none (unmatched)
         - name: deviationStartTime
           type: keyword
           required: false

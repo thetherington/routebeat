@@ -47,43 +47,19 @@ routebeat:
     # Defines the idle duration after which the subscription client will be closed to test reconnect logic
     sub_reconnect_idle: 120m
 
-  elasticsearch:
-    # Elasticsearch server node url
-    address: "http://127.0.0.1:9200"
-
-    # Index pattern to query for scheduler data
-    index: "log-magnum-scheduler-*"
-
-    # (optional) Authentication credentials - either API key or username/password.
-    # api_key takes precedence when both are set
-    #api_key: "id:api_key"
-    #username: "elastic"
-    #password: "changeme"
-
-    # (optional) TLS settings for https addresses
-    #ssl:
-      # PEM encoded CA certificate used to verify the server, in addition to the system CAs
-      #ca_cert: "/etc/routebeat/ca.crt"
-
-      # Skip server certificate verification (not recommended)
-      #insecure_skip_verify: false
-
-    # Defines how often the schedule event params is fetched 
+  # Schedule store, rebuilt from the events api every period
+  schedule:
     period: 5m
 
-  # HTTP server that receives scheduler events and updates the schedule hot cache
-  webhook:
-    enabled: true
-    port: 8082
+    # also fetch the events active at now+lookahead, so upcoming windows are stored before they start
+    lookahead: 25m
 
-    # time to wait for webhook data when a destination goes unscheduled
-    wait: 5s
-
-  # (optional) API queried on demand when a destination goes unscheduled to update the schedule hot cache
-  # {output} in the url is replaced with the destination, otherwise it's added as the "output" query parameter
-  #events_api:
-    #url: "http://127.0.0.1:8080/api/v1/scheduler/events?output={output}"
+  # Scheduler events api (required). Polled for the schedule, and queried for one destination when it goes unscheduled
+  events_api:
+    url: "http://127.0.0.1:8080/api/v1/scheduler/events"
+    #task: apg
     #timeout: 3s
+    #bulk_timeout: 15s
     #delay: 0s
     #headers:
       #Authorization: "Bearer <token>"

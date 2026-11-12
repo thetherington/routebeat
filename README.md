@@ -15,13 +15,11 @@ flowchart LR
         SE["Scheduler events<br/>(task: apg)"]
     end
 
-    ES[("Elasticsearch<br/>log-magnum-scheduler-*")]
-    EAPI["Events API<br/>(optional)"]
+    EAPI["Events API"]
 
     subgraph RB["Routebeat"]
         direction TB
-        SC["Schedule cache<br/>(5 min poll)"]
-        HC["Hot cache<br/>(webhook / events api)"]
+        SC["Schedule store<br/>(5 min poll + recheck refresh)"]
         BC["Bus state cache"]
         ENG["Route deviation engine"]
     end
@@ -31,12 +29,10 @@ flowchart LR
 
     GQL -- "every period, per tag" --> ENG
     WS -- "route changes, per tag" --> ENG
-    SE -- "ingest" --> ES
-    ES -- "aggregation query" --> SC
-    SE -- "POST webhook" --> HC
-    EAPI -- "GET on demand" --> HC
+    SE --> EAPI
+    EAPI -- "GET all events, every 5 min" --> SC
+    EAPI -- "GET one bus, on unscheduled" --> SC
     SC --> ENG
-    HC --> ENG
     BC <--> ENG
     ENG -- "query / notification / summary events" --> OUT
     ENG -- "Route Validation alerts" --> NOTIF
@@ -54,8 +50,7 @@ flowchart LR
   - [Nameset filtering and labels](#nameset-filtering-and-labels)
 - [Magnum Scheduler: the schedule](#magnum-scheduler-the-schedule)
   - [Scheduler event format](#scheduler-event-format)
-  - [Schedule cache (Elasticsearch poll)](#schedule-cache-elasticsearch-poll)
-  - [Hot cache (webhook and events API)](#hot-cache-webhook-and-events-api)
+  - [Schedule store (events API)](#schedule-store-events-api)
   - [How schedule labels match nameset labels](#how-schedule-labels-match-nameset-labels)
 - [Finding route deviation](#finding-route-deviation)
   - [Routing states](#routing-states)
@@ -71,7 +66,7 @@ flowchart LR
   - [Query and notification events](#query-and-notification-events)
   - [Summary events](#summary-events)
 - [Configuration](#configuration)
-- [Webhook and events API reference](#webhook-and-events-api-reference)
+- [Events API reference](#events-api-reference)
 - [Persistence](#persistence)
 - [Building, running and testing](#building-running-and-testing)
 
@@ -192,10 +187,10 @@ Notes:
 
 ## Magnum Scheduler: the schedule
 
-The Magnum Scheduler decides which source each bus should be on, and when. Routebeat reads its **APG events** (`task: "apg"`) from two places:
+The Magnum Scheduler decides which source each bus should be on, and when. Routebeat reads its **APG events** (`task: "apg"`) from the scheduler **events API** (`events_api.url`) in two ways, and both update the same **schedule store**:
 
-1. **Elasticsearch.** The scheduler events are ingested into `log-magnum-scheduler-*`, and routebeat polls them every `elasticsearch.period` to build the **schedule cache**.
-2. **Directly.** Scheduler events are pushed to the routebeat **webhook**, or fetched on demand from the **events API**, to build the **hot cache**. This covers fast schedule changes that the 5 minute poll would miss.
+1. **Schedule poll.** Every `schedule.period` (default 5m), routebeat fetches the events of every bus that are active now and at now + `schedule.lookahead` (default 25m).
+2. **Unscheduled recheck.** When a bus has just gone unscheduled, routebeat fetches the latest events for that one bus. This covers fast schedule changes (advances, fast-forwards) that the 5 minute poll would miss.
 
 ### Scheduler event format
 
@@ -238,56 +233,46 @@ Fields routebeat uses:
 | `input` | the scheduled source label | the **primary** when tagged `MAIN`, the **backup** when tagged `BACKUP` |
 | `tags` | role of the event | must include `MAIN` or `BACKUP`. Other tags (`EXTERNAL`, `PxP`, ...) can appear alongside them and are ignored |
 | `start_date` / `end_date` | the scheduled window, **UTC**, format `YYYY/MM/DD HH:MM:SS` | the event is only used while it's active |
-| `start` / `end` | the same window as epoch nanoseconds | not used. They're strings in the webhook and events API payloads and numbers once ingested into Elasticsearch |
+| `start` / `end` | the same window as epoch nanoseconds | not used. They're strings in the events API payloads |
 
-### Schedule cache (Elasticsearch poll)
+### Schedule store (events API)
 
-Every `elasticsearch.period` (default 5m), routebeat runs two aggregation queries against `elasticsearch.index`, one for **now** and one for **now + 25 minutes**:
+Every `schedule.period` (default 5m), routebeat sends two requests to the events API, with no `output`, so every bus is returned. The `task` filter makes the API return only APG events:
 
-- **Filter:** `@timestamp` in the last 4 hours, `event.module: event`, `scheduler.event.task: apg`, and `scheduler.event.start_date ≤ T ≤ scheduler.event.end_date`.
-- **Aggregate:** by `scheduler.event.output` (the bus code, up to 3000 buses). Then:
-  - by `scheduler.event.tags`: the latest `scheduler.event.input` for `MAIN` becomes the primary, and the latest for `BACKUP` becomes the backup;
-  - the latest `scheduler.event.start_date` and `scheduler.event.end_date`.
+```
+GET <events_api.url>?end=now&start=now&task=apg
+GET <events_api.url>?end=now%2B25m&start=now%2B25m&task=apg
+```
 
-  "Latest" always means the document with the newest `@timestamp`.
+The relative times are passed to the API as-is (`+` is sent URL-encoded as `%2B`). The response is a list of events for all buses, ungrouped. Routebeat processes it like this:
+
+1. Anything that isn't an `apg` event is dropped cheaply, before it's fully decoded (a safety net, in case the API ignores the `task` filter).
+2. Events not tagged `MAIN` or `BACKUP`, or with dates that can't be read, are dropped.
+3. The events are grouped by `output` into **routing windows**. The `MAIN` and `BACKUP` events with the same start and end become one window with a primary and a backup. Windows that only touch (one ends when the next starts) stay separate.
+4. The windows from both requests are merged per bus. An event returned by both requests is stored once, and each bus's windows are sorted by start time.
 
 ```mermaid
 flowchart LR
-    Q1["Query: active now"] --> M["Merge per bus"]
-    Q2["Query: active at now+25m"] --> M
-    M --> C["Schedule cache<br/>bus → [current window, next window]"]
+    Q1["GET start=now"] --> M["Group by bus,<br/>fold MAIN + BACKUP"]
+    Q2["GET start=now+25m"] --> M
+    M --> C["Schedule store<br/>bus → [current window, next window, ...]"]
 ```
 
-Each bus stores its current window and its upcoming window. When routebeat looks up a bus, it uses the window that's **active right now**, so the cache moves to the next program at the top of the hour without waiting for the next poll. With `elasticsearch.dev.validate_end_date: false`, the first stored window is used whatever its dates (for development only).
+The poll replaces the whole store, so buses that are no longer scheduled are dropped. If the **now** request fails, the store is left as it was; it's never emptied by a failed poll. If only the lookahead request fails, the current windows are still loaded.
 
-### Hot cache (webhook and events API)
+When routebeat looks up a bus, it uses the window that's **active right now**, so the store moves to the next program at the top of the hour without waiting for the next poll. With `schedule.dev.validate_end_date: false`, the first stored window is used whatever its dates (for development only). Expired windows are removed every 10 minutes.
 
-The scheduler can change a route seconds before or after air (advances, fast-forwards, manual changes). The 5 minute poll can be up to 5 minutes behind. The **hot cache** holds overrides for these fast changes:
+The [unscheduled recheck](#unscheduled-recheck) also writes to the store. It merges the refreshed windows for a bus: a window with the same or an overlapping time replaces the stored one, but a `BACKUP`-only update keeps the stored primary, and the other way round. A bus refreshed while a poll is running keeps its refreshed windows, so a poll that started earlier can't overwrite newer data.
 
-| Feed | How it arrives |
-|---|---|
-| **Webhook** (`webhook.enabled`) | the scheduler POSTs events to `http://<routebeat>:<webhook.port>/api/v1/scheduler/events` |
-| **Events API** (`events_api.url`) | routebeat GETs the latest events for one bus, **only when that bus has just gone unscheduled** (see [Unscheduled recheck](#unscheduled-recheck)) |
-
-Both feeds take the same payload, either a single scheduler event or a list of them, and both are processed the same way:
-
-1. Anything that isn't an `apg` event is dropped cheaply, before it's fully decoded. That includes other tasks such as `route`, `silence` and `xmuds`, and schedule-shaped documents.
-2. Events not tagged `MAIN` or `BACKUP`, and events **not active right now**, are dropped. **Only active events ever enter the hot cache.**
-3. The remaining events are grouped by `output`. A `MAIN` event sets the primary, a `BACKUP` event sets the backup.
-4. When the new event's window overlaps an existing hot entry for the same bus, the two are merged: a `BACKUP` event that arrives after the `MAIN` one fills in the backup without wiping the primary. Otherwise the new event replaces the entry.
-
-Rules for using the hot cache:
-- An active hot entry **takes priority** over the schedule cache for that bus.
-- Every read checks that the entry is still active, and expired entries are removed every 10 minutes.
-- If the webhook and the events API are **both off**, the hot cache isn't used at all.
-
-The event's `schedule.routingSource` says where the schedule came from:
+The event's `schedule.routingSource` says how the schedule routing was found:
 
 | Value | Meaning |
 |---|---|
-| `cache` | the schedule cache (Elasticsearch poll) |
-| `hotcache` | the hot cache (webhook or events API) |
-| `none` | the bus wasn't found in either cache |
+| `cache` | the schedule store (events API poll) |
+| `recheck` | the schedule store, right after an [unscheduled recheck](#unscheduled-recheck) refreshed the bus and the source matched |
+| `none` | the bus has no active window in the store |
+
+> `recheck` replaces the `hotcache` value of earlier versions. Update any dashboards or saved searches that filter on `hotcache`.
 
 ### How schedule labels match nameset labels
 
@@ -341,12 +326,9 @@ flowchart TD
     A["Destination from query or notification"] --> B{"Exact tag match?"}
     B -- no --> X1["Discard"]
     B -- yes --> C["Build event, copy namesets,<br/>pick destination and source labels"]
-    C --> D{"Bus in hot cache<br/>(active, hot cache enabled)?"}
-    D -- yes --> R1["routing from hotcache"]
-    D -- no --> E{"Bus in schedule cache<br/>(active window)?"}
+    C --> E{"Bus in schedule store<br/>(active window)?"}
     E -- yes --> R2["routing from cache"]
     E -- no --> X2["Publish event<br/>schedule.matched = false<br/>routingSource = none"]
-    R1 --> F
     R2 --> F
     F{"Source label blank?"} -- yes --> X3["Publish event, status unknown<br/>(report only)"]
     F -- no --> G{"Source = primary?"}
@@ -358,7 +340,7 @@ flowchart TD
     I -- no --> J{"Source tagged tda?"}
     J -- yes --> T["TDA"]
     J -- no --> U["UnscheduledAudio"]
-    U --> K{"Notification, bus was in a<br/>known state, hot cache enabled?"}
+    U --> K{"Notification, bus was<br/>in a known state?"}
     K -- yes --> RC["Unscheduled recheck"]
     K -- no --> S
     RC --> S
@@ -377,7 +359,7 @@ flowchart TD
 
 ### Unscheduled recheck
 
-`UnscheduledAudio` is often a false alarm: the scheduler has just moved the bus to a new source, and the routebeat schedule hasn't caught up yet. When a **notification** moves a bus from a known state into `UnscheduledAudio`, and the hot cache is enabled, routebeat checks again before reporting it:
+`UnscheduledAudio` is often a false alarm: the scheduler has just moved the bus to a new source, and the routebeat schedule hasn't caught up yet. When a **notification** moves a bus from a known state into `UnscheduledAudio`, routebeat refreshes that bus from the events API and checks again before reporting it:
 
 ```mermaid
 sequenceDiagram
@@ -385,35 +367,30 @@ sequenceDiagram
     participant SDVN as Magnum SDVN
     participant RB as Routebeat
     participant API as Events API
-    participant HC as Hot cache
-    participant SCH as Scheduler (webhook)
+    participant ST as Schedule store
 
     SDVN->>RB: terminalsUpdated (BSITAL → DCZA009D)
     RB->>RB: DCZA009D not scheduled → UnscheduledAudio
-    alt events_api configured
-        opt events_api.delay set
-            RB->>RB: pause events_api.delay (let the api receive new data)
-        end
-        RB->>API: GET events for BSITAL
-        API-->>RB: [apg MAIN DCZA009D, apg BACKUP ...]
-        RB->>HC: apply active MAIN/BACKUP events
-        RB->>HC: does DCZA009D match now?
-        HC-->>RB: yes → Primary (routingSource = hotcache)
+    opt events_api.delay set
+        RB->>RB: pause events_api.delay (let the api receive new data)
     end
-    opt still unmatched and webhook enabled
-        SCH-->>HC: POST scheduler events (may arrive any time)
-        RB->>RB: wait webhook.wait (default 5s)
-        RB->>HC: does DCZA009D match now?
+    RB->>API: GET ?output=BSITAL&task=apg
+    API-->>RB: [apg MAIN DCZA009D, apg BACKUP ...]
+    RB->>ST: merge the windows that haven't ended
+    RB->>ST: does DCZA009D match the active window?
+    alt match
+        ST-->>RB: yes → Primary / Backup (routingSource = recheck)
+    else no match
+        RB->>RB: accept UnscheduledAudio (routingSource = cache)
     end
-    RB->>RB: no match → accept UnscheduledAudio
 ```
 
-- If the events API is configured, it's tried first. A match returns straight away, without the webhook wait.
-- If the events API is slow to receive new scheduler data, set `events_api.delay`. Routebeat then pauses that long before calling the API, so the request is more likely to include the change that just happened. Webhook data that arrives during the pause is still used, because the hot cache is checked again after the API call.
-- If the API is down, returns an error or doesn't match, the webhook wait is used as a fallback (when the webhook is on).
-- With both the webhook and the events API off, `UnscheduledAudio` is accepted immediately.
+- If the events API is slow to receive new scheduler data, set `events_api.delay`. Routebeat then pauses that long before calling the API, so the request is more likely to include the change that just happened.
+- If the API is down or returns an error, the store isn't changed and the source is checked against the polled window, which normally means `UnscheduledAudio` is accepted.
+- The response can carry events for other buses too. They're merged into the store as well.
+- When there's no match, the event reports the routing the status was decided against, even if the refresh stored a newer window.
 - The recheck never runs for queries, for buses seen for the first time, or for buses already unscheduled.
-- A recheck delays the destinations after it in the same batch by up to `events_api.delay` plus the events API timeout plus `webhook.wait`.
+- A recheck delays the destinations after it in the same batch by up to `events_api.delay` plus `events_api.timeout`.
 
 ### Transitions and deviation times
 
@@ -634,7 +611,7 @@ One event per destination, per query or notification:
 | `schedule.status` | keyword | `Primary`, `Backup`, `Zorro`, `TDA`, `UnscheduledAudio` or `unknown` |
 | `schedule.primary` / `schedule.backup` | keyword | scheduled primary (`MAIN`) and backup (`BACKUP`) source labels |
 | `schedule.matched` | boolean | `false` when the bus isn't in the schedule |
-| `schedule.routingSource` | keyword | `cache`, `hotcache` or `none` |
+| `schedule.routingSource` | keyword | `cache`, `recheck` or `none` |
 | `schedule.deviationStartTime` | keyword | RFC3339 start of the current deviation, or `-` (see [deviation times](#transitions-and-deviation-times)) |
 | `schedule.deviationEndTime` | keyword | RFC3339 end of a deviation; only set on the event that returns the bus to Primary |
 
@@ -703,28 +680,18 @@ routebeat:
       client_secret: "<secret>"
       token_url: "https://<magnum>/auth/realms/magnum/protocol/openid-connect/token"
 
-  elasticsearch:
-    address: "http://<elasticsearch>:9200"
-    index: "log-magnum-scheduler-*"
+  schedule:
     period: 5m
-    # api_key: "id:api_key"
-    # username: "elastic"
-    # password: "changeme"
-    # ssl:
-    #   ca_cert: "/etc/routebeat/ca.crt"
-    #   insecure_skip_verify: false
+    lookahead: 25m
 
-  webhook:
-    enabled: true
-    port: 8082
-    wait: 5s
-
-  # events_api:
-  #   url: "http://<scheduler-events>/api/v1/scheduler/events?output={output}"
-  #   timeout: 3s
-  #   delay: 0s
-  #   headers:
-  #     Authorization: "Bearer <token>"
+  events_api:
+    url: "http://<scheduler-events>/api/v1/scheduler/events"
+    # task: apg
+    # timeout: 3s
+    # bulk_timeout: 15s
+    # delay: 0s
+    # headers:
+    #   Authorization: "Bearer <token>"
 
   notifiers:
     auto:
@@ -753,25 +720,19 @@ routebeat:
 | `api.timeout` | `10s` | query timeout |
 | `api.sub_reconnect_idle` | `120m` | resubscribe after this long with no notifications |
 | `api.auth.client_id` / `client_secret` / `token_url` | | Magnum OIDC client credentials |
-| **`elasticsearch`** | | **Scheduler data source** |
-| `elasticsearch.address` | `http://127.0.0.1:9200` | Elasticsearch URL |
-| `elasticsearch.index` | `log-magnum-scheduler-*` | index pattern holding the scheduler events |
-| `elasticsearch.period` | `5m` | how often the schedule cache is refreshed |
-| `elasticsearch.api_key` | | API key `id:key`; takes priority over username and password |
-| `elasticsearch.username` / `password` | | basic authentication |
-| `elasticsearch.ssl.ca_cert` | | PEM CA file trusted in addition to the system CAs |
-| `elasticsearch.ssl.insecure_skip_verify` | `false` | skip certificate checks (not recommended) |
-| `elasticsearch.dev.load_cache` | `false` | development: load `scheduleCache.gob` instead of polling |
-| `elasticsearch.dev.save_cache` | `false` | development: save `scheduleCache.gob` on shutdown |
-| `elasticsearch.dev.validate_end_date` | `true` | only use schedule windows that are active now |
-| **`webhook`** | | **Hot cache: push** |
-| `webhook.enabled` | `true` | run the scheduler webhook server |
-| `webhook.port` | `8082` | webhook listen port |
-| `webhook.wait` | `5s` | how long an unscheduled bus waits for webhook data; `0` disables the wait |
-| **`events_api`** | | **Hot cache: pull** (off unless `url` is set) |
-| `events_api.url` | | `{output}` is replaced with the bus code; without it, `?output=<bus>` is added |
-| `events_api.timeout` | `3s` | request timeout |
-| `events_api.delay` | `0s` | pause before each request, in case the API is slow to receive new scheduler data; `0s` calls the API immediately |
+| **`schedule`** | | **Schedule store** |
+| `schedule.period` | `5m` | how often every bus's events are fetched from the events API |
+| `schedule.lookahead` | `25m` | each poll also fetches the events active at now + lookahead, so the next window is stored before it starts |
+| `schedule.dev.load_cache` | `false` | development: use the saved `scheduleStore.gob` and don't poll the events API |
+| `schedule.dev.validate_end_date` | `true` | only use schedule windows that are active now |
+| **`events_api`** | | **Scheduler events API** (required) |
+| `events_api.url` | *(required)* | events endpoint. Query parameters are added to any already in the URL; the `{output}` path placeholder isn't supported |
+| `events_api.start_param` / `end_param` | `start` / `end` | query parameter names for the poll's point in time |
+| `events_api.output_param` | `output` | query parameter name for the bus code in a recheck |
+| `events_api.task_param` / `task` | `task` / `apg` | task filter sent with every request; an empty `task` sends no filter |
+| `events_api.timeout` | `3s` | recheck request timeout |
+| `events_api.bulk_timeout` | `15s` | poll request timeout (each poll response holds every bus) |
+| `events_api.delay` | `0s` | pause before each recheck request, in case the API is slow to receive new scheduler data; `0s` calls the API immediately |
 | `events_api.headers` | | extra request headers, for example authorization |
 | **`notifiers`** | | **Alert delivery** (`manual` takes priority over `auto`) |
 | `notifiers.manual[].node` / `port` | | fixed notification program endpoints |
@@ -779,41 +740,30 @@ routebeat:
 | `notifiers.auto.username` / `password` | `admin` / `admin` | Magnum Analytics credentials |
 | `notifiers.auto.types` | `["notification-elastic"]` | program types to look up |
 
+The `elasticsearch` and `webhook` sections of earlier versions have been removed. If an old config still has them, they're ignored and a warning is logged at startup.
+
 ---
 
-## Webhook and events API reference
+## Events API reference
 
-### Webhook
+Every request is a `GET` with an `Accept: application/json` header and any configured `events_api.headers`. The response body must be a JSON array of scheduler events (a single event object is also accepted). A non-`2xx` status, a timeout, a connection error or a malformed body is logged as an error and changes nothing.
 
-`POST /api/v1/scheduler/events` on `webhook.port`. The body is one scheduler event object, or a JSON array of them.
+| Request | When | Example (default parameter names) |
+|---|---|---|
+| poll, now | every `schedule.period` | `GET <url>?end=now&start=now&task=apg` |
+| poll, lookahead | right after the first poll request | `GET <url>?end=now%2B25m&start=now%2B25m&task=apg` |
+| recheck | a bus has just gone unscheduled | `GET <url>?output=BSITAL&task=apg` |
 
-| Response | When |
-|---|---|
-| `202 {"status":"accepted"}` | any valid JSON. Events that aren't `apg`, aren't active, or have no `MAIN`/`BACKUP` tag are accepted and skipped silently |
-| `400 {"error":"..."}` | the body is empty, isn't JSON, or is malformed JSON |
-| `405 Method Not Allowed` | anything other than `POST` |
+Every 5 minutes, routebeat logs counts of the events received, skipped and stored under the `ScheduleEvents` [debug selector](#debug-logging).
 
-```bash
-curl -X POST http://<routebeat>:8082/api/v1/scheduler/events \
-  -H 'Content-Type: application/json' \
-  -d '[{"task":"apg","output":"BSITAL","input":"DCZA001D","tags":["MAIN"],
-        "start_date":"2026/10/30 18:00:00","end_date":"2026/10/30 19:00:00"}]'
-```
-
-Every 5 minutes, routebeat logs counts of accepted, skipped and invalid scheduler events under the `SchedulerHookCallback` [debug selector](#debug-logging).
-
-### Events API
-
-After the optional `events_api.delay`, routebeat calls `GET <events_api.url>`, with the bus code put in `{output}` or added as `?output=<bus>`. Any configured headers are sent with the request. A `2xx` response body is processed exactly like a webhook payload. Any other status, a timeout, or a connection error is logged, and routebeat falls back to the webhook wait.
-
-A mock events API for testing is included:
+A mock events API for testing is included. It returns a `MAIN` and `BACKUP` event per bus, for the `-outputs` buses on a poll and for the requested bus on a recheck, active around the requested time:
 
 ```bash
-go run ./tools/mock_events_api -addr :8090 -primary DCXA006D   # backup is a random REM### per request
+go run ./tools/mock_events_api -addr :8090 -primary DCXA006D -outputs BSITAL,BSTRJA   # backup is a random REM### per request
 ```
 ```yaml
 events_api:
-  url: "http://localhost:8090/events/{output}"
+  url: "http://localhost:8090/events"
 ```
 
 ---
@@ -823,8 +773,7 @@ events_api:
 | File | Content | Saved | Loaded |
 |---|---|---|---|
 | `busCache.gob` | stored state, source and deviation times for every bus | every 10 minutes and on shutdown | at startup |
-| `scheduleHotCache.gob` | active hot cache entries (expired entries are dropped before saving) | every 10 minutes and on shutdown, only when the hot cache is enabled (webhook or events API on) | at startup when the hot cache is enabled; entries that expired while routebeat was down are dropped |
-| `scheduleCache.gob` | schedule cache | on shutdown with `dev.save_cache` | with `dev.load_cache` (development) |
+| `scheduleStore.gob` | schedule store windows (expired windows are dropped before saving) | every 10 minutes and on shutdown | at startup, so the schedule is available before the first poll; windows that ended while routebeat was down are dropped |
 
 Because the bus cache is saved, an open deviation keeps its start time across restarts. Any change missed while routebeat was down is fixed by [self-correction](#self-correction-when-out-of-sync).
 
@@ -842,25 +791,25 @@ make                                    # build ./routebeat
 Routebeat's debug messages are grouped under **selectors**. Choose which ones to show with `-d`. Use a comma-separated list, or `"*"` for every selector, including the libbeat ones:
 
 ```bash
-./routebeat -c routebeat.yml -e -d "ProcessResults.Notifications,ScheduleCache,ScheduleHotCache"
+./routebeat -c routebeat.yml -e -d "ProcessResults.Notifications,ScheduleCache,ScheduleRecheck"
 ```
 
 or in `routebeat.yml`:
 
 ```yaml
 logging.level: debug
-logging.selectors: ["ProcessResults.*", "ScheduleCache", "ScheduleHotCache"]
+logging.selectors: ["ProcessResults.*", "ScheduleCache", "ScheduleRecheck"]
 ```
 
 | Selector | What it logs | Use it to |
 |---|---|---|
 | `ProcessResults.Query`<br>`ProcessResults.Notifications` | For each batch of that event type (periodic query or subscription notification): the tag, number of destinations and event type; then the totals of **processed**, **discarded** (tag didn't match exactly), **unmatched** (not in the schedule) and **expired**; and how many alerts were sent for the tag. Notification batches also list the destinations they contained (`Destinations: BSITAL,BSTRJA`, using the mapping nameset label, or the Magnum destination name without mapping); query batches only log totals. `ProcessResults.*` or `ProcessResults` turns on both (see below) | follow each poll or each subscription message on its own, and see how many destinations matched the schedule |
-| `ScheduleCache` | For every destination that matched a schedule: the destination and source labels, the routing source (`cache` or `hotcache`), and the schedule found (primary, backup, window) | find out why a bus got a particular status: compare its source label with the scheduled primary and backup |
-| `ScheduleHotCache` | An unscheduled recheck found a hot cache routing that matches the source. It uses the same fixed `Key:value` format as `ScheduleHotCacheMiss`, with `State` in place of `Reason`:<br>`Hot cache hit Destination:<bus> Source:<source label> Check:<events_api\|webhook_wait> State:<Primary\|Backup> Primary:<hot primary> Backup:<hot backup>` | confirm that a webhook or events API update rescued a bus from `UnscheduledAudio`, and which check found it |
-| `ScheduleHotCacheMiss` | Each time an unscheduled recheck looks at the hot cache and doesn't find a match. One line per check, in a fixed `Key:value` format:<br>`Hot cache miss Destination:<bus> Source:<source label> Check:<events_api\|webhook_wait> Reason:<no_active_routing\|source_not_scheduled> Primary:<hot primary> Backup:<hot backup>`<br>`no_active_routing` means the hot cache has no active entry for the bus, and Primary and Backup are blank. `source_not_scheduled` means an active entry exists but the source is neither its primary nor its backup. | find buses the hot cache couldn't rescue, and collect the destination and source pairs, for example to check later what the scheduler or events API should have sent |
-| `QueryScheduler` | The number of buses in the schedule cache after each Elasticsearch poll | check that the poll is running and returning the expected number of buses |
-| `SchedulerHookCallback` | For each webhook or events API payload: the number of `apg` events received and hot cache buses updated, each active event, each bus updated, and `apg` events that couldn't be decoded. Every 5 minutes it also logs counters for the previous 5 minutes: `non-apg` (dropped as another task or shape), `invalid` (bad JSON, dates or format), `apg-no-tag` (no `MAIN`/`BACKUP` tag), `apg-in-active` (active, applied), `apg-outside-active` (outside their window, skipped) | check what the scheduler is sending and why events are or aren't reaching the hot cache |
-| `CleanupScheduleHotCache` | Each expired hot cache entry removed, and the total removed, every 10 minutes | confirm that old overrides are dropped |
+| `ScheduleCache` | For every destination that matched a schedule: the destination and source labels, the routing source (`cache` or `recheck`), and the schedule found (primary, backup, window) | find out why a bus got a particular status: compare its source label with the scheduled primary and backup |
+| `ScheduleRecheck` | An unscheduled recheck refreshed the bus and found a routing that matches the source. It uses the same fixed `Key:value` format as `ScheduleRecheckMiss`, with `State` in place of `Reason`:<br>`Recheck hit Destination:<bus> Source:<source label> State:<Primary\|Backup> Primary:<primary> Backup:<backup>` | confirm that the events API refresh rescued a bus from `UnscheduledAudio` |
+| `ScheduleRecheckMiss` | Each unscheduled recheck that doesn't find a match, in a fixed `Key:value` format:<br>`Recheck miss Destination:<bus> Source:<source label> Reason:<no_active_routing\|source_not_scheduled> Primary:<primary> Backup:<backup>`<br>`no_active_routing` means the store has no active window for the bus after the refresh, and Primary and Backup are blank. `source_not_scheduled` means an active window exists but the source is neither its primary nor its backup. | find buses the recheck couldn't rescue, and collect the destination and source pairs, for example to check later what the events API should have returned |
+| `QueryScheduler` | After each schedule poll: the number of events returned for now and for the lookahead, the number of buses stored, and how many buses were kept because a recheck refreshed them during the poll | check that the poll is running and returning the expected number of buses |
+| `ScheduleEvents` | Every 5 minutes, counters for the previous 5 minutes of poll and recheck responses: `events` (`apg` events decoded), `non-apg` (dropped as another task or shape), `invalid` (bad JSON or dates), `apg-no-tag` (no `MAIN`/`BACKUP` tag), `routings` (windows built) | check what the events API is returning, and why events are or aren't reaching the schedule |
+| `PruneSchedule` | Every 10 minutes, the number of expired windows and empty buses removed from the schedule store | confirm that old windows are dropped |
 
 Libbeat matches selectors exactly; the only wildcard it understands is `*`. Routebeat adds its own handling for the `ProcessResults` group:
 
@@ -874,7 +823,7 @@ Libbeat matches selectors exactly; the only wildcard it understands is `*`. Rout
 
 A log line carries the name of the selector that let it through. With `ProcessResults.*` or `ProcessResults` set, both event types show that name, so use the `EventType` field in the message to tell them apart. `ProcessResults.*` is only understood for this group; other `.*` patterns match nothing.
 
-Info, warning and error messages are always logged, whatever selectors are set. These include defunct-state warnings and self-corrections, events API failures, rejected webhook payloads, subscription reconnects and alert delivery errors.
+Info, warning and error messages are always logged, whatever selectors are set. These include defunct-state warnings and self-corrections, events API and schedule poll failures, subscription reconnects and alert delivery errors.
 
 ### Updating generated files
 

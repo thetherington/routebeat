@@ -46,66 +46,49 @@ routebeat:
     # Defines the idle duration after which the subscription client will be closed to test reconnect logic
     sub_reconnect_idle: 120m
 
-  elasticsearch:
-    # Elasticsearch server node url
-    address: "http://127.0.0.1:9200"
-
-    # Index pattern to query for scheduler data
-    index: "log-magnum-scheduler-*"
-
-    # (optional) Authentication credentials - either API key or username/password.
-    # api_key takes precedence when both are set
-    #api_key: "id:api_key"
-    #username: "elastic"
-    #password: "changeme"
-
-    # (optional) TLS settings for https addresses
-    #ssl:
-      # PEM encoded CA certificate used to verify the server, in addition to the system CAs
-      #ca_cert: "/etc/routebeat/ca.crt"
-
-      # Skip server certificate verification (not recommended)
-      #insecure_skip_verify: false
-
-    # Defines how often the schedule event params is fetched 
+  # Schedule store, rebuilt from the events api every period
+  schedule:
+    # how often all scheduler events are fetched (default 5m)
     period: 5m
 
-    # developer settings to save/load cache
-    dev:
-      # load a local copy of the schedule cache (scheduleCache.gob)
-      load_cache: true
+    # each poll also fetches the events active at now+lookahead, so the upcoming windows are
+    # stored before they start (default 25m)
+    lookahead: 25m
 
-      # save a the schedule cache on shutdown (scheduleCache.gob)
-      save_cache: true 
-      
-      # disable validating the end date (default true)
-      validate_end_date: false
+    # developer settings
+    #dev:
+      # use the saved schedule store (scheduleStore.gob) and don't poll the events api (default false)
+      #load_cache: false
 
-  # HTTP server that receives scheduler events (POST /api/v1/scheduler/events) and updates the schedule hot cache
-  webhook:
-    # enable or disable the webhook server (default true)
-    enabled: true
+      # only use schedule windows that are active now (default true)
+      #validate_end_date: true
 
-    # port the webhook server listens on (default 8082)
-    port: 8082
+  # Scheduler events api (required). Polled for the schedule of every bus, and queried for one
+  # destination when it goes unscheduled to pick up an advance or fast-forward. Requests look like:
+  #   poll:    <url>?start=now&end=now&task=apg  and  <url>?start=now%2B25m&end=now%2B25m&task=apg
+  #   recheck: <url>?output=<bus>&task=apg
+  events_api:
+    url: "http://127.0.0.1:8080/api/v1/scheduler/events"
 
-    # time to wait for webhook data when a destination goes unscheduled (default 5s)
-    wait: 5s
+    # query parameter names (defaults start, end, output, task)
+    #start_param: start
+    #end_param: end
+    #output_param: output
+    #task_param: task
 
-  # (optional) API queried on demand when a destination goes unscheduled to update the schedule hot cache.
-  # the response is processed the same as a webhook payload.
-  # if both the webhook and the events api are disabled, the hot cache is not used
-  #events_api:
-    # {output} in the url is replaced with the destination, otherwise it's added as the "output" query parameter
-    #url: "http://127.0.0.1:8080/api/v1/scheduler/events?output={output}"
+    # task value sent to filter the events. empty sends no task filter (default apg)
+    #task: apg
 
-    # request timeout (default 3s)
+    # timeout of the per destination recheck request (default 3s)
     #timeout: 3s
 
-    # (optional) pause before the request in case the api has latency receiving new data (default 0s, no pause)
+    # timeout of the schedule poll requests, which return every bus (default 15s)
+    #bulk_timeout: 15s
+
+    # (optional) pause before a recheck request in case the api has latency receiving new data (default 0s, no pause)
     #delay: 0s
 
-    # (optional) headers added to the request
+    # (optional) headers added to the requests
     #headers:
       #Authorization: "Bearer <token>"
 

@@ -18,34 +18,28 @@ import (
 	"github.com/hasura/go-graphql-client"
 	"github.com/hasura/go-graphql-client/pkg/jsonutil"
 
-	insite "github.com/thetherington/routebeat/beater/analytics"
 	"github.com/thetherington/routebeat/beater/cache"
 	"github.com/thetherington/routebeat/beater/eventsapi"
 	"github.com/thetherington/routebeat/beater/httpclient"
-	"github.com/thetherington/routebeat/beater/httpserver"
 	"github.com/thetherington/routebeat/beater/notify"
+	"github.com/thetherington/routebeat/beater/schedule"
 	routeCfg "github.com/thetherington/routebeat/config"
 )
 
 const (
-	ANALYTICS_TIMEOUT = 10
-	BUSCACHE_FILE     = "busCache.gob"
-	HOTCACHE_FILE     = "scheduleHotCache.gob"
-	SCHEDCACHE_FILE   = "scheduleCache.gob"
-	GLOBAL_COUNTERS   = "global"
+	BUSCACHE_FILE   = "busCache.gob"
+	SCHEDULE_FILE   = "scheduleStore.gob"
+	GLOBAL_COUNTERS = "global"
 
-	HOTCACHE_CLEANUP_PERIOD = 10 * time.Minute
+	SCHEDULE_PRUNE_PERIOD = 10 * time.Minute
 )
 
 var (
-	db         insite.SearchInterface
-	notifier   notify.NotiferInterface
-	httpServer *httpserver.Server
+	notifier notify.NotiferInterface
 
-	scheduleCache    = cache.NewCacheMap[string, []*insite.BusRouting]()
-	scheduleHotCache = cache.NewCacheMap[string, *insite.BusRouting]()
-	countersCache    = cache.NewCacheMap[string, *Counters]()
-	busCache         = cache.NewCacheMap[string, *BusState]()
+	scheduleStore = schedule.NewStore()
+	countersCache = cache.NewCacheMap[string, *Counters]()
+	busCache      = cache.NewCacheMap[string, *BusState]()
 
 	lastNotificationTime time.Time
 )
@@ -65,7 +59,7 @@ type routebeat struct {
 	subClient  *graphql.SubscriptionClient
 	subIds     []string
 	queryMu    sync.Mutex
-	eventsAPI  *eventsapi.Client // nil when the events api is not configured
+	eventsAPI  *eventsapi.Client // schedule source. only nil in tests
 }
 
 // New creates an instance of routebeat.
@@ -85,21 +79,30 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		return nil, errors.New("nameset cannot be blank if mapping is enabled")
 	}
 
-	// Create the elasticsearch client handler
-	var err error
-	db, err = insite.NewClient(&insite.ClientConfig{
-		Address:  c.ES.Address,
-		Index:    c.ES.Index,
-		Username: c.ES.Username,
-		Password: c.ES.Password,
-		APIKey:   c.ES.APIKey,
+	// the elasticsearch schedule source and the webhook server were removed
+	for _, removed := range []string{"elasticsearch", "webhook"} {
+		if cfg.HasField(removed) {
+			logp.Warn("ignoring removed config block: %s", removed)
+		}
+	}
 
-		CACert:             c.ES.SSL.CACert,
-		InsecureSkipVerify: c.ES.SSL.InsecureSkipVerify,
+	// create the events api client used to poll the schedule and refresh a destination on demand
+	eventsAPI, err := eventsapi.New(eventsapi.Config{
+		Url:         c.EventsAPI.Url,
+		Timeout:     c.EventsAPI.Timeout,
+		BulkTimeout: c.EventsAPI.BulkTimeout,
+		Headers:     c.EventsAPI.Headers,
+		StartParam:  c.EventsAPI.StartParam,
+		EndParam:    c.EventsAPI.EndParam,
+		OutputParam: c.EventsAPI.OutputParam,
+		TaskParam:   c.EventsAPI.TaskParam,
+		Task:        c.EventsAPI.Task,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create elasticsearch client: %w", err)
+		return nil, fmt.Errorf("failed to create events api client: %w", err)
 	}
+
+	logp.Info("Schedule source: events api %s (period %s, lookahead %s)", c.EventsAPI.Url, c.Schedule.Period, c.Schedule.Lookahead)
 
 	// try to load the busCache from file
 	if err := busCache.LoadFromFile(BUSCACHE_FILE); err != nil {
@@ -108,38 +111,17 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		logp.Info("Loaded busCache length: %d keys", busCache.Length())
 	}
 
-	// create the events api client used to refresh the hot cache on demand. the response
-	// payload is processed by the SchedulerHookCallback, the same as the webhook
-	var eventsAPI *eventsapi.Client
-	if c.EventsAPI.Url != "" {
-		eventsAPI, err = eventsapi.New(eventsapi.Config{
-			Url:     c.EventsAPI.Url,
-			Timeout: c.EventsAPI.Timeout,
-			Headers: c.EventsAPI.Headers,
-		}, SchedulerHookCallback)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create events api client: %w", err)
-		}
-
-		logp.Info("Events API enabled for url: %s", c.EventsAPI.Url)
+	// try to load the schedule store from file, so the schedule is available before the first poll
+	if err := scheduleStore.LoadFromFile(SCHEDULE_FILE); err != nil {
+		logp.Err("failed to load schedule store from file: %v", err)
+	} else {
+		// drop windows that expired while the beat was not running
+		windows, _ := scheduleStore.Prune(time.Now())
+		logp.Info("Loaded schedule store: %d outputs (%d expired windows removed)", scheduleStore.Length(), windows)
 	}
 
-	// the hot cache is only used when the webhook or the events api can update it
-	if c.Webhook.Enabled || eventsAPI != nil {
-		// try to load the scheduleHotCache from file
-		if err := scheduleHotCache.LoadFromFile(HOTCACHE_FILE); err != nil {
-			logp.Err("failed to load scheduleHotCache from file: %v", err)
-		} else {
-			// drop entries that expired while the beat was not running
-			removed := PruneScheduleHotCache(time.Now())
-			logp.Info("Loaded scheduleHotCache length: %d keys (%d expired removed)", scheduleHotCache.Length(), removed)
-		}
-	}
-
-	// debugging/development
-	if c.ES.Dev.LoadCache {
-		scheduleCache.LoadFromFile(SCHEDCACHE_FILE)
-		logp.Info("Loaded scheduleCache length: %d keys", scheduleCache.Length())
+	if c.Schedule.Dev.LoadCache {
+		logp.Info("schedule.dev.load_cache is set, the events api schedule poll is disabled")
 	}
 
 	done := make(chan struct{})
@@ -193,13 +175,6 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		notifier = noopNotifier{}
 	}
 
-	// create the http server to receive scheduler events into the routebeat hook callback function
-	if c.Webhook.Enabled {
-		httpServer = httpserver.New(c.Webhook.Port, done, SchedulerHookCallback)
-	} else {
-		logp.Info("Webhook server disabled")
-	}
-
 	bt := &routebeat{
 		done:       done,
 		config:     c,
@@ -221,13 +196,13 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		return err
 	}
 
-	// start the elasticsearch query routine (5 minutes default)
-	if !bt.config.ES.Dev.LoadCache {
-		go AnalyticsQueryGoRoutine(bt.config.ES.Period, bt.done)
+	// start the events api schedule poll routine (5 minutes default)
+	if !bt.config.Schedule.Dev.LoadCache {
+		go ScheduleQueryGoRoutine(bt.eventsAPI, bt.config.Schedule.Period, bt.config.Schedule.Lookahead, bt.done)
 	}
 
-	// go routine to save the busCache, and the scheduleHotCache when it's in use, to file every 10 minutes incase of a crash
-	go SaveCachesGoRoutine(bt.done, bt.hotCacheEnabled())
+	// go routine to save the busCache and the schedule store to file every 10 minutes incase of a crash
+	go SaveCachesGoRoutine(bt.done)
 
 	// create the graphql query client
 	queryClient := graphql.NewClient(bt.config.API.Url, bt.httpClient)
@@ -317,20 +292,11 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 		}
 	}()
 
-	// start the http server to receive scheduler events into the routebeat hook callback function
-	if httpServer != nil {
-		if err := httpServer.Start(); err != nil {
-			logp.Err("failed to start webhook server: %v", err)
-		}
-	}
-
-	// start the hot cache cleanup routine to remove any entries that are no longer active based on the current time every HOTCACHE_CLEANUP_PERIOD
-	if bt.hotCacheEnabled() {
-		go CleanupScheduleHotCache(bt.done)
-	}
+	// remove expired windows from the schedule store every SCHEDULE_PRUNE_PERIOD
+	go PruneScheduleRoutine(bt.done)
 
 	// periodically log scheduler event counters for visibility during runtime
-	go logSchedulerEventCounters(bt.done)
+	go logScheduleEventCounters(bt.done)
 
 	// block here until the application is terminated
 	<-bt.done
@@ -349,18 +315,12 @@ func (bt *routebeat) Stop() {
 		}
 	}
 
-	// debugging/development
-	if bt.config.ES.Dev.SaveCache {
-		scheduleCache.SaveToFile(SCHEDCACHE_FILE)
-	}
-
 	// Stops go routines:
 	//   - magnum token refresh
-	//   - http server hook callback
-	//   - stops scheduler hot cache cleanup routine
-	//   - log scheduler event counters routine
-	//   - elasticsearch scheduleQuery
-	//   - busCache/hotCache SaveToFile
+	//   - schedule prune routine
+	//   - log schedule event counters routine
+	//   - events api schedule poll
+	//   - busCache/schedule store SaveToFile
 	//   - query terminals routine
 	//   - subscription run reconnect routine
 	//   - exits beat run function
@@ -724,9 +684,9 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 		event.Delete("routeableTerminal")
 	}
 
-	// get the busrouting information from the schedule cache or hot cache based on the destination label
-	// return the event as-is if the cache doesn't have a key
-	routing, routingSource, ok := GetBusRoutingFromCaches(dstLabel, bt.config.ES.Dev.ValidateEndDate, bt.hotCacheEnabled())
+	// get the busrouting information from the schedule store based on the destination label
+	// return the event as-is if the store doesn't have a routing
+	routing, routingSource, ok := GetBusRouting(dstLabel, bt.config.Schedule.Dev.ValidateEndDate)
 	if !ok {
 		event.PutValue("schedule.matched", false)
 		event.PutValue("schedule.routingSource", routingSource.String())
@@ -753,9 +713,9 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	}
 
 	// a notification that moved a known bus into Unsched may be an advance event or a FF,
-	// so recheck against the hot cache (refreshed by the events api and/or the webhook)
-	if bt.hotCacheEnabled() && isUnscheduledTransition(eventType, prevState, currentState) {
-		currentState, routing, routingSource = bt.recheckHotRoute(dstLabel, srcLabel, routing, routingSource)
+	// so refresh the destination from the events api and recheck
+	if bt.eventsAPI != nil && isUnscheduledTransition(eventType, prevState, currentState) {
+		currentState, routing, routingSource = bt.recheckRoute(dstLabel, srcLabel, routing, routingSource)
 	}
 
 	// schedule grouped data

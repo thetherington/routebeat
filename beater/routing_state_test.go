@@ -1,7 +1,6 @@
 package beater
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -10,9 +9,8 @@ import (
 	"time"
 
 	"github.com/elastic/elastic-agent-libs/logp"
-	insite "github.com/thetherington/routebeat/beater/analytics"
-	"github.com/thetherington/routebeat/beater/eventsapi"
 	"github.com/thetherington/routebeat/beater/notify"
+	"github.com/thetherington/routebeat/beater/schedule"
 	routeCfg "github.com/thetherington/routebeat/config"
 )
 
@@ -21,137 +19,67 @@ type stubNotifier struct{}
 func (stubNotifier) Send(...notify.Notification) error { return nil }
 func (stubNotifier) GetOrigin() string                 { return "test" }
 
-// activeWindow returns a start/end date pair (scheduler format, UTC) around now
-func activeWindow() (string, string) {
-	now := time.Now().UTC()
-	return now.Add(-time.Hour).Format(schedulerDateLayout), now.Add(time.Hour).Format(schedulerDateLayout)
-}
-
-// newTestEventsAPI creates an events api client wired to the SchedulerHookCallback, as in New()
-func newTestEventsAPI(t *testing.T, url string) *eventsapi.Client {
+// recheckBeat returns a beat with the events api at url ("" = none) and end date validation on
+func recheckBeat(t *testing.T, url string, delay time.Duration) *routebeat {
 	t.Helper()
 
-	c, err := eventsapi.New(eventsapi.Config{Url: url, Timeout: time.Second}, SchedulerHookCallback)
-	if err != nil {
-		t.Fatal(err)
+	bt := &routebeat{config: routeCfg.Config{
+		Schedule:  routeCfg.Schedule{Dev: routeCfg.Developer{ValidateEndDate: true}},
+		EventsAPI: routeCfg.EventsAPI{Delay: delay},
+	}}
+
+	if url != "" {
+		bt.eventsAPI = newTestEventsAPI(t, url)
 	}
 
-	return c
+	return bt
 }
 
-func TestEventsAPIRefreshUpdatesHotCache(t *testing.T) {
-	resetCaches()
-	start, end := activeWindow()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		output := r.URL.Query().Get("output")
-		w.Write([]byte("[" +
-			apgEventJSON(output, "SRC1", "MAIN", start, end) + "," +
-			apgEventJSON(output, "SRC2", "BACKUP", start, end) + "," +
-			`{"task":"router","output":"X"}` + "]"))
-	}))
-	defer srv.Close()
-
-	if err := newTestEventsAPI(t, srv.URL).Refresh(context.Background(), "BUS1"); err != nil {
-		t.Fatal(err)
-	}
-
-	r, ok := scheduleHotCache.Get("BUS1")
-	if !ok || r.Pri != "SRC1" || r.Sec != "SRC2" {
-		t.Errorf("hot cache = %+v %t", r, ok)
-	}
-}
-
-// a response for one output can carry events for other outputs, all of them are merged into the hot cache
-func TestEventsAPIRefreshUpdatesMultipleOutputs(t *testing.T) {
-	resetCaches()
-	start, end := activeWindow()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("[" +
-			apgEventJSON("BUS1", "A1", "MAIN", start, end) + "," +
-			apgEventJSON("BUS2", "B1", "MAIN", start, end) + "," +
-			apgEventJSON("BUS1", "A2", "BACKUP", start, end) + "," +
-			apgEventJSON("BUS3", "C2", "BACKUP", start, end) + "]"))
-	}))
-	defer srv.Close()
-
-	// an existing BUS2 entry with an overlapping window keeps its backup
-	now := time.Now().UTC()
-	scheduleHotCache.Set("BUS2", routing("", "OLD_SEC", now.Add(-time.Hour), now.Add(time.Hour)))
-
-	if err := newTestEventsAPI(t, srv.URL).Refresh(context.Background(), "BUS1"); err != nil {
-		t.Fatal(err)
-	}
-
-	want := map[string]struct{ pri, sec string }{
-		"BUS1": {"A1", "A2"},      // requested output, MAIN and BACKUP are not adjacent in the list
-		"BUS2": {"B1", "OLD_SEC"}, // other output merged with the existing entry
-		"BUS3": {"", "C2"},        // other output with only a BACKUP event
-	}
-
-	for output, w := range want {
-		r, ok := GetScheduleHotRoute(output, time.Now())
-		if !ok || r.Pri != w.pri || r.Sec != w.sec {
-			t.Errorf("%s = %+v %t, want pri=%q sec=%q", output, r, ok, w.pri, w.sec)
-		}
-	}
-}
-
-// the ScheduleHotCache (hit) and ScheduleHotCacheMiss selectors log the same fields for every hot cache check
-func TestRecheckHotRouteLogs(t *testing.T) {
+// the ScheduleRecheck (hit) and ScheduleRecheckMiss selectors log the same fields for every recheck
+func TestRecheckRouteLogs(t *testing.T) {
 	const (
-		hit  = "ScheduleHotCache"
-		miss = "ScheduleHotCacheMiss"
+		hit  = "ScheduleRecheck"
+		miss = "ScheduleRecheckMiss"
 	)
 
 	if err := logp.DevelopmentSetup(logp.ToObserverOutput(), logp.WithSelectors(hit, miss)); err != nil {
 		t.Fatal(err)
 	}
 
-	const wait = 40 * time.Millisecond
 	start, end := activeWindow()
-	original := &insite.BusRouting{Pri: "ES_PRI", Sec: "ES_SEC"}
+	original := &schedule.BusRouting{Pri: "POLL_PRI", Sec: "POLL_SEC"}
 
 	tests := []struct {
-		name    string
-		webhook bool
-		body    string // events api response
-		post    string // webhook payload delivered during the wait
-		want    []string
+		name   string
+		polled bool // the store has the polled POLL_PRI/POLL_SEC routing
+		status int
+		body   string // events api response
+		want   string
 	}{
 		{
-			name: "events api with no routing",
-			body: "[]",
-			want: []string{
-				miss + ": Hot cache miss Destination:BUS1 Source:SRC_NEW Check:events_api Reason:no_active_routing Primary: Backup:",
-			},
+			name:   "no routing",
+			status: http.StatusOK,
+			body:   "[]",
+			want:   miss + ": Recheck miss Destination:BUS1 Source:SRC_NEW Reason:no_active_routing Primary: Backup:",
 		},
 		{
-			name:    "events api and webhook wait with a different source",
-			webhook: true,
-			body:    "[" + apgEventJSON("BUS1", "OTHER_PRI", "MAIN", start, end) + "," + apgEventJSON("BUS1", "OTHER_SEC", "BACKUP", start, end) + "]",
-			want: []string{
-				miss + ": Hot cache miss Destination:BUS1 Source:SRC_NEW Check:events_api Reason:source_not_scheduled Primary:OTHER_PRI Backup:OTHER_SEC",
-				miss + ": Hot cache miss Destination:BUS1 Source:SRC_NEW Check:webhook_wait Reason:source_not_scheduled Primary:OTHER_PRI Backup:OTHER_SEC",
-			},
+			name:   "refreshed routing with a different source",
+			polled: true,
+			status: http.StatusOK,
+			body:   "[" + apgEventJSON("BUS1", "OTHER_PRI", "MAIN", start, end) + "," + apgEventJSON("BUS1", "OTHER_SEC", "BACKUP", start, end) + "]",
+			want:   miss + ": Recheck miss Destination:BUS1 Source:SRC_NEW Reason:source_not_scheduled Primary:OTHER_PRI Backup:OTHER_SEC",
 		},
 		{
-			name: "events api hit",
-			body: "[" + apgEventJSON("BUS1", "SRC_NEW", "MAIN", start, end) + "," + apgEventJSON("BUS1", "OTHER_SEC", "BACKUP", start, end) + "]",
-			want: []string{
-				hit + ": Hot cache hit Destination:BUS1 Source:SRC_NEW Check:events_api State:Primary Primary:SRC_NEW Backup:OTHER_SEC",
-			},
+			name:   "refresh error checks the polled routing",
+			polled: true,
+			status: http.StatusInternalServerError,
+			want:   miss + ": Recheck miss Destination:BUS1 Source:SRC_NEW Reason:source_not_scheduled Primary:POLL_PRI Backup:POLL_SEC",
 		},
 		{
-			name:    "events api miss then webhook wait hit",
-			webhook: true,
-			body:    "[]",
-			post:    apgEventJSON("BUS1", "SRC_NEW", "BACKUP", start, end),
-			want: []string{
-				miss + ": Hot cache miss Destination:BUS1 Source:SRC_NEW Check:events_api Reason:no_active_routing Primary: Backup:",
-				hit + ": Hot cache hit Destination:BUS1 Source:SRC_NEW Check:webhook_wait State:Backup Primary: Backup:SRC_NEW",
-			},
+			name:   "hit",
+			status: http.StatusOK,
+			body:   "[" + apgEventJSON("BUS1", "SRC_NEW", "MAIN", start, end) + "," + apgEventJSON("BUS1", "OTHER_SEC", "BACKUP", start, end) + "]",
+			want:   hit + ": Recheck hit Destination:BUS1 Source:SRC_NEW State:Primary Primary:SRC_NEW Backup:OTHER_SEC",
 		},
 	}
 
@@ -160,19 +88,14 @@ func TestRecheckHotRouteLogs(t *testing.T) {
 			resetCaches()
 			logp.ObserverLogs().TakeAll()
 
-			srv, _ := newEventsAPIStub(t, http.StatusOK, func(string) string { return tt.body })
-
-			bt := &routebeat{config: routeCfg.Config{Webhook: routeCfg.Webhook{Enabled: tt.webhook, Wait: wait}}}
-			bt.eventsAPI = newTestEventsAPI(t, srv.URL)
-
-			if tt.post != "" {
-				go func() {
-					time.Sleep(wait / 2)
-					SchedulerHookCallback(context.Background(), []byte(tt.post))
-				}()
+			if tt.polled {
+				now := time.Now().UTC()
+				setSchedule(map[string]*schedule.BusRouting{"BUS1": routing("POLL_PRI", "POLL_SEC", now.Add(-time.Hour), now.Add(time.Hour))})
 			}
 
-			bt.recheckHotRoute("BUS1", "SRC_NEW", original, SourceCache)
+			srv, _ := newEventsAPIStub(t, tt.status, func(string) string { return tt.body })
+
+			recheckBeat(t, srv.URL, 0).recheckRoute("BUS1", "SRC_NEW", original, SourceCache)
 
 			var got []string
 			for _, entry := range logp.ObserverLogs().TakeAll() {
@@ -181,8 +104,8 @@ func TestRecheckHotRouteLogs(t *testing.T) {
 				}
 			}
 
-			if !slices.Equal(got, tt.want) {
-				t.Errorf("hot cache logs:\n got  %q\n want %q", got, tt.want)
+			if !slices.Equal(got, []string{tt.want}) {
+				t.Errorf("recheck logs:\n got  %q\n want %q", got, []string{tt.want})
 			}
 		})
 	}
@@ -192,14 +115,14 @@ func TestMatchScheduledState(t *testing.T) {
 	tests := []struct {
 		name     string
 		srcLabel string
-		routing  *insite.BusRouting
+		routing  *schedule.BusRouting
 		want     RoutingState
 	}{
-		{name: "primary", srcLabel: "A", routing: &insite.BusRouting{Pri: "A", Sec: "B"}, want: Primary},
-		{name: "backup", srcLabel: "B", routing: &insite.BusRouting{Pri: "A", Sec: "B"}, want: Backup},
-		{name: "no match", srcLabel: "C", routing: &insite.BusRouting{Pri: "A", Sec: "B"}, want: Unsched},
-		{name: "blank label with blank pri", srcLabel: "", routing: &insite.BusRouting{Sec: "B"}, want: Unsched},
-		{name: "blank label with blank sec", srcLabel: "", routing: &insite.BusRouting{Pri: "A"}, want: Unsched},
+		{name: "primary", srcLabel: "A", routing: &schedule.BusRouting{Pri: "A", Sec: "B"}, want: Primary},
+		{name: "backup", srcLabel: "B", routing: &schedule.BusRouting{Pri: "A", Sec: "B"}, want: Backup},
+		{name: "no match", srcLabel: "C", routing: &schedule.BusRouting{Pri: "A", Sec: "B"}, want: Unsched},
+		{name: "blank label with blank pri", srcLabel: "", routing: &schedule.BusRouting{Sec: "B"}, want: Unsched},
+		{name: "blank label with blank sec", srcLabel: "", routing: &schedule.BusRouting{Pri: "A"}, want: Unsched},
 	}
 
 	for _, tt := range tests {
@@ -213,7 +136,7 @@ func TestMatchScheduledState(t *testing.T) {
 
 func TestResolveRoutingState(t *testing.T) {
 	bt := &routebeat{config: routeCfg.Config{Zorro: "zorro", TDA: "tda"}}
-	r := &insite.BusRouting{Pri: "A", Sec: "B"}
+	r := &schedule.BusRouting{Pri: "A", Sec: "B"}
 
 	if got := bt.resolveRoutingState("C", []string{"zorro"}, r); got != Zorro {
 		t.Errorf("got %s, want Zorro", got)
@@ -232,7 +155,7 @@ func TestResolveRoutingState(t *testing.T) {
 	}
 
 	// a blank label is Unknown, even with a blank schedule label or a zorro/tda tag
-	blank := &insite.BusRouting{Pri: "A"}
+	blank := &schedule.BusRouting{Pri: "A"}
 	for _, tags := range [][]string{nil, {"zorro"}, {"tda"}} {
 		if got := bt.resolveRoutingState("", tags, blank); got != Unknown {
 			t.Errorf("blank label with tags %v: got %s, want Unknown", tags, got)
@@ -258,11 +181,9 @@ func TestIsUnscheduledTransition(t *testing.T) {
 	}
 }
 
-func TestRecheckHotRoute(t *testing.T) {
-	const wait = 100 * time.Millisecond
-
+func TestRecheckRoute(t *testing.T) {
 	start, end := activeWindow()
-	original := &insite.BusRouting{Pri: "ES_PRI", Sec: "ES_SEC"}
+	original := &schedule.BusRouting{Pri: "POLL_PRI", Sec: "POLL_SEC"}
 
 	// stub api that returns a MAIN routing matching the source, or a 500 when failAPI is set
 	var calls, failAPI atomic.Int32
@@ -278,18 +199,14 @@ func TestRecheckHotRoute(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		webhook   bool
 		api       bool
 		failAPI   bool
 		wantState RoutingState
-		wantWait  bool
 		wantCalls int32
 	}{
-		{name: "webhook only waits", webhook: true, wantState: Unsched, wantWait: true},
-		{name: "api match returns without waiting", webhook: true, api: true, wantState: Primary, wantCalls: 1},
-		{name: "api only does not wait", api: true, wantState: Primary, wantCalls: 1},
-		{name: "api failure falls back to the webhook wait", webhook: true, api: true, failAPI: true, wantState: Unsched, wantWait: true, wantCalls: 1},
-		{name: "api failure without webhook does not wait", api: true, failAPI: true, wantState: Unsched, wantCalls: 1},
+		{name: "no events api", wantState: Unsched},
+		{name: "api match", api: true, wantState: Primary, wantCalls: 1},
+		{name: "api failure", api: true, failAPI: true, wantState: Unsched, wantCalls: 1},
 	}
 
 	for _, tt := range tests {
@@ -301,14 +218,12 @@ func TestRecheckHotRoute(t *testing.T) {
 				failAPI.Store(1)
 			}
 
-			bt := &routebeat{config: routeCfg.Config{Webhook: routeCfg.Webhook{Enabled: tt.webhook, Wait: wait}}}
+			url := ""
 			if tt.api {
-				bt.eventsAPI = newTestEventsAPI(t, srv.URL)
+				url = srv.URL
 			}
 
-			began := time.Now()
-			state, r, src := bt.recheckHotRoute("BUS1", "SRC_NEW", original, SourceCache)
-			elapsed := time.Since(began)
+			state, r, src := recheckBeat(t, url, 0).recheckRoute("BUS1", "SRC_NEW", original, SourceCache)
 
 			if state != tt.wantState {
 				t.Errorf("state = %s, want %s", state, tt.wantState)
@@ -318,12 +233,8 @@ func TestRecheckHotRoute(t *testing.T) {
 				t.Errorf("unsched should keep the original routing and source, got %+v %s", r, src)
 			}
 
-			if tt.wantState != Unsched && (r.Pri != "SRC_NEW" || src != SourceHotCache) {
-				t.Errorf("got %+v %s, want the hot routing", r, src)
-			}
-
-			if waited := elapsed >= wait; waited != tt.wantWait {
-				t.Errorf("waited = %t (%s), want %t", waited, elapsed, tt.wantWait)
+			if tt.wantState != Unsched && (r.Pri != "SRC_NEW" || src != SourceRecheck) {
+				t.Errorf("got %+v %s, want the refreshed routing", r, src)
 			}
 
 			if got := calls.Load(); got != tt.wantCalls {
@@ -332,80 +243,39 @@ func TestRecheckHotRoute(t *testing.T) {
 		})
 	}
 
-	t.Run("webhook data arriving during the wait is used", func(t *testing.T) {
-		resetCaches()
-
-		bt := &routebeat{config: routeCfg.Config{Webhook: routeCfg.Webhook{Enabled: true, Wait: wait}}}
-
-		go func() {
-			time.Sleep(wait / 2)
-			SchedulerHookCallback(context.Background(), []byte(apgEventJSON("BUS1", "SRC_NEW", "BACKUP", start, end)))
-		}()
-
-		state, r, src := bt.recheckHotRoute("BUS1", "SRC_NEW", original, SourceCache)
-		if state != Backup || r.Sec != "SRC_NEW" || src != SourceHotCache {
-			t.Errorf("got %s %+v %s", state, r, src)
-		}
-	})
-
-	// stub api with latency: it only has the new event once ready is set
-	var ready atomic.Bool
-	var requested atomic.Int64
-	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requested.Store(time.Now().UnixNano())
-		if !ready.Load() {
-			w.Write([]byte("[]"))
-			return
-		}
-		w.Write([]byte(apgEventJSON(r.URL.Query().Get("output"), "SRC_NEW", "MAIN", start, end)))
-	}))
-	defer slow.Close()
-
 	t.Run("events api delay pauses before the request", func(t *testing.T) {
-		resetCaches()
-		ready.Store(false)
+		const delay = 100 * time.Millisecond
 
-		bt := &routebeat{config: routeCfg.Config{EventsAPI: routeCfg.EventsAPI{Delay: wait}}}
-		bt.eventsAPI = newTestEventsAPI(t, slow.URL)
+		// stub api with latency: it only has the new event once ready is set
+		var ready atomic.Bool
+		var requested atomic.Int64
+		slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requested.Store(time.Now().UnixNano())
+			if !ready.Load() {
+				w.Write([]byte("[]"))
+				return
+			}
+			w.Write([]byte(apgEventJSON(r.URL.Query().Get("output"), "SRC_NEW", "MAIN", start, end)))
+		}))
+		defer slow.Close()
+
+		resetCaches()
 
 		// the api receives the new data partway through the delay
 		go func() {
-			time.Sleep(wait / 2)
+			time.Sleep(delay / 2)
 			ready.Store(true)
 		}()
 
 		began := time.Now()
-		state, r, src := bt.recheckHotRoute("BUS1", "SRC_NEW", original, SourceCache)
+		state, r, src := recheckBeat(t, slow.URL, delay).recheckRoute("BUS1", "SRC_NEW", original, SourceCache)
 
-		if state != Primary || r.Pri != "SRC_NEW" || src != SourceHotCache {
-			t.Errorf("got %s %+v %s, want the hot routing", state, r, src)
+		if state != Primary || r.Pri != "SRC_NEW" || src != SourceRecheck {
+			t.Errorf("got %s %+v %s, want the refreshed routing", state, r, src)
 		}
 
-		if delayed := time.Duration(requested.Load() - began.UnixNano()); delayed < wait {
-			t.Errorf("api requested after %s, want at least %s", delayed, wait)
-		}
-	})
-
-	t.Run("events api delay match skips the webhook wait", func(t *testing.T) {
-		resetCaches()
-		ready.Store(true)
-
-		bt := &routebeat{config: routeCfg.Config{
-			Webhook:   routeCfg.Webhook{Enabled: true, Wait: 10 * wait},
-			EventsAPI: routeCfg.EventsAPI{Delay: wait},
-		}}
-		bt.eventsAPI = newTestEventsAPI(t, slow.URL)
-
-		began := time.Now()
-		state, _, _ := bt.recheckHotRoute("BUS1", "SRC_NEW", original, SourceCache)
-		elapsed := time.Since(began)
-
-		if state != Primary {
-			t.Errorf("state = %s, want Primary", state)
-		}
-
-		if elapsed < wait || elapsed >= 10*wait {
-			t.Errorf("took %s, want the delay (%s) without the webhook wait", elapsed, wait)
+		if delayed := time.Duration(requested.Load() - began.UnixNano()); delayed < delay {
+			t.Errorf("api requested after %s, want at least %s", delayed, delay)
 		}
 	})
 }

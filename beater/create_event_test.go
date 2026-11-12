@@ -1,7 +1,6 @@
 package beater
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -11,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	insite "github.com/thetherington/routebeat/beater/analytics"
 	"github.com/thetherington/routebeat/beater/notify"
+	"github.com/thetherington/routebeat/beater/schedule"
 	routeCfg "github.com/thetherington/routebeat/config"
 )
 
-// wait used for the webhook in tests
+// upper bound for a call that should return without waiting on a recheck
 const testWait = 50 * time.Millisecond
 
 // sentinel values for checkValue
@@ -28,19 +27,17 @@ const (
 type beatOpts struct {
 	noMapping  bool   // disable the Broadview nameset mapping
 	defLabel   string // mapping default label
-	webhook    bool
 	eventsAPI  string // stub server url, "" = disabled
-	noValidate bool   // disable ES.Dev.ValidateEndDate
+	noValidate bool   // disable Schedule.Dev.ValidateEndDate
 }
 
 func newTestBeat(t *testing.T, o beatOpts) *routebeat {
 	t.Helper()
 
 	cfg := routeCfg.Config{
-		Zorro:   "zorro",
-		TDA:     "tda",
-		ES:      routeCfg.Elasticsearch{Dev: routeCfg.Developer{ValidateEndDate: !o.noValidate}},
-		Webhook: routeCfg.Webhook{Enabled: o.webhook, Wait: testWait},
+		Zorro:    "zorro",
+		TDA:      "tda",
+		Schedule: routeCfg.Schedule{Dev: routeCfg.Developer{ValidateEndDate: !o.noValidate}},
 	}
 
 	if !o.noMapping {
@@ -161,14 +158,6 @@ func newEventsAPIStub(t *testing.T, status int, body func(output string) string)
 	t.Cleanup(srv.Close)
 
 	return srv, &calls
-}
-
-// postWebhookAfter delivers a webhook payload to the SchedulerHookCallback after a delay
-func postWebhookAfter(d time.Duration, payload string) {
-	go func() {
-		time.Sleep(d)
-		SchedulerHookCallback(context.Background(), []byte(payload))
-	}()
 }
 
 func field(res *EventResults, key string) (any, bool) {
@@ -320,10 +309,10 @@ func assertBus(t *testing.T, dst string, state RoutingState, src string) *BusSta
 	return bs
 }
 
-// seedSchedule stores an active ES routing for BUS1 (Pri SRC1, Sec SRC2)
+// seedSchedule stores an active routing window for BUS1 (Pri SRC1, Sec SRC2)
 func seedSchedule() {
 	now := time.Now()
-	scheduleCache.Set("BUS1", []*insite.BusRouting{routing("SRC1", "SRC2", now.Add(-time.Hour), now.Add(time.Hour))})
+	setSchedule(map[string]*schedule.BusRouting{"BUS1": routing("SRC1", "SRC2", now.Add(-time.Hour), now.Add(time.Hour))})
 }
 
 func TestCreateEventFromEdgeBuild(t *testing.T) {
@@ -400,7 +389,7 @@ func TestCreateEventFromEdgeBuild(t *testing.T) {
 	t.Run("physical source only", func(t *testing.T) {
 		resetCaches()
 		now := time.Now()
-		scheduleCache.Set("BUS1", []*insite.BusRouting{routing("PHY1", "", now.Add(-time.Hour), now.Add(time.Hour))})
+		setSchedule(map[string]*schedule.BusRouting{"BUS1": routing("PHY1", "", now.Add(-time.Hour), now.Add(time.Hour))})
 
 		res, err := newTestBeat(t, beatOpts{}).CreateEventFromEdge(
 			newTestEdge("BUS1", edgeOpts{physical: "PHY1"}), "MES", &Counters{}, Query)
@@ -444,10 +433,10 @@ func TestCreateEventFromEdgeBuild(t *testing.T) {
 
 func TestCreateEventFromEdgeScheduleLookup(t *testing.T) {
 	now := time.Now()
-	active := func(pri, sec string) *insite.BusRouting {
+	active := func(pri, sec string) *schedule.BusRouting {
 		return routing(pri, sec, now.Add(-time.Hour), now.Add(time.Hour))
 	}
-	expired := func(pri, sec string) *insite.BusRouting {
+	expired := func(pri, sec string) *schedule.BusRouting {
 		return routing(pri, sec, now.Add(-2*time.Hour), now.Add(-time.Hour))
 	}
 
@@ -455,7 +444,7 @@ func TestCreateEventFromEdgeScheduleLookup(t *testing.T) {
 		resetCaches()
 		counters := &Counters{}
 
-		res, err := newTestBeat(t, beatOpts{webhook: true}).CreateEventFromEdge(
+		res, err := newTestBeat(t, beatOpts{}).CreateEventFromEdge(
 			newTestEdge("BUS1", edgeOpts{src: "SRC1"}), "MES", counters, Query)
 
 		if !errors.Is(err, ErrScheduleBusNotFound) {
@@ -473,50 +462,26 @@ func TestCreateEventFromEdgeScheduleLookup(t *testing.T) {
 	tests := []struct {
 		name  string
 		opts  beatOpts
-		es    *insite.BusRouting
-		hot   *insite.BusRouting
+		es    *schedule.BusRouting
 		found bool
 		want  wantSchedule
 	}{
 		{
-			name: "expired ES entry with end date validation",
+			name: "expired entry with end date validation",
 			es:   expired("SRC1", "SRC2"),
 		},
 		{
-			name:  "expired ES entry without end date validation",
+			name:  "expired entry without end date validation",
 			opts:  beatOpts{noValidate: true},
 			es:    expired("SRC1", "SRC2"),
 			found: true,
 			want:  wantSchedule{matched: true, source: "cache", status: "Primary", primary: "SRC1", backup: "SRC2"},
 		},
 		{
-			name:  "active ES entry",
+			name:  "active entry",
 			es:    active("SRC1", "SRC2"),
 			found: true,
 			want:  wantSchedule{matched: true, source: "cache", status: "Primary", primary: "SRC1", backup: "SRC2"},
-		},
-		{
-			name:  "active hot entry with webhook enabled",
-			opts:  beatOpts{webhook: true},
-			es:    active("ES_PRI", "ES_SEC"),
-			hot:   active("SRC1", ""),
-			found: true,
-			want:  wantSchedule{matched: true, source: "hotcache", status: "Primary", primary: "SRC1", backup: isEmpty},
-		},
-		{
-			name:  "active hot entry ignored when webhook and events api are off",
-			es:    active("ES_PRI", "SRC1"),
-			hot:   active("SRC1", ""),
-			found: true,
-			want:  wantSchedule{matched: true, source: "cache", status: "Backup", primary: "ES_PRI", backup: "SRC1"},
-		},
-		{
-			name:  "expired hot entry falls back to ES",
-			opts:  beatOpts{webhook: true},
-			es:    active("ES_PRI", "SRC1"),
-			hot:   expired("SRC1", ""),
-			found: true,
-			want:  wantSchedule{matched: true, source: "cache", status: "Backup", primary: "ES_PRI", backup: "SRC1"},
 		},
 	}
 
@@ -525,10 +490,7 @@ func TestCreateEventFromEdgeScheduleLookup(t *testing.T) {
 			resetCaches()
 
 			if tt.es != nil {
-				scheduleCache.Set("BUS1", []*insite.BusRouting{tt.es})
-			}
-			if tt.hot != nil {
-				scheduleHotCache.Set("BUS1", tt.hot)
+				setSchedule(map[string]*schedule.BusRouting{"BUS1": tt.es})
 			}
 
 			res, err := newTestBeat(t, tt.opts).CreateEventFromEdge(
@@ -598,6 +560,8 @@ func TestCreateEventFromEdgeStateResolution(t *testing.T) {
 func TestCreateEventFromEdgeBlankSource(t *testing.T) {
 	useNotifier(t, stubNotifier{})
 
+	srv, calls := newEventsAPIStub(t, http.StatusOK, func(string) string { return "[]" })
+
 	tests := []struct {
 		name      string
 		opts      beatOpts
@@ -611,8 +575,14 @@ func TestCreateEventFromEdgeBlankSource(t *testing.T) {
 		{name: "physical source only", edge: edgeOpts{physical: "PHY1"}, eventType: Notification, seed: true},
 		{name: "subscribed source without a broadview nameset", edge: edgeOpts{src: "SRC1", noSrcNameset: true}, eventType: Notification, seed: true},
 		{name: "zorro tag does not apply without a label", edge: edgeOpts{src: "ZSRC", srcTags: []string{"zorro"}, noSrcNameset: true}, eventType: Notification, seed: true},
-		{name: "no recheck with the hot cache enabled", opts: beatOpts{webhook: true}, edge: edgeOpts{}, eventType: Notification, seed: true},
+		{name: "no recheck with the events api enabled", opts: beatOpts{eventsAPI: srv.URL}, edge: edgeOpts{}, eventType: Notification, seed: true},
 	}
+
+	t.Cleanup(func() {
+		if calls.Load() != 0 {
+			t.Errorf("events api calls = %d, want 0", calls.Load())
+		}
+	})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -701,7 +671,7 @@ func TestCreateEventFromEdgeNotificationNoChange(t *testing.T) {
 		srv, calls := newEventsAPIStub(t, http.StatusOK, func(string) string { return "[]" })
 		began := time.Now()
 
-		res, _ := newTestBeat(t, beatOpts{webhook: true, eventsAPI: srv.URL}).CreateEventFromEdge(
+		res, _ := newTestBeat(t, beatOpts{eventsAPI: srv.URL}).CreateEventFromEdge(
 			newTestEdge("BUS1", edgeOpts{src: "SRC_NEW"}), "MES", &Counters{}, Notification)
 
 		if elapsed := time.Since(began); elapsed >= testWait {
@@ -859,7 +829,7 @@ func TestCreateEventFromEdgeTransitions(t *testing.T) {
 			devEnd:   isNow,
 		},
 		{
-			name: "primary to unscheduled with the hot cache disabled",
+			name: "primary to unscheduled without the events api",
 			seed: &seed{state: Primary, src: "SRC1"},
 			edge: edgeOpts{src: "SRC_NEW"},
 			want: wantSchedule{matched: true, source: "cache", status: Unsched.String(), primary: "SRC1", backup: "SRC2"},
@@ -876,7 +846,6 @@ func TestCreateEventFromEdgeTransitions(t *testing.T) {
 		},
 		{
 			name: "new bus to unscheduled does not recheck",
-			opts: beatOpts{webhook: true},
 			edge: edgeOpts{src: "SRC_NEW"},
 			want: wantSchedule{matched: true, source: "cache", status: Unsched.String()},
 			notifs: func(*BusState) []wantNotif {
@@ -949,145 +918,104 @@ func TestCreateEventFromEdgeTransitions(t *testing.T) {
 func TestCreateEventFromEdgeUnscheduledRecheck(t *testing.T) {
 	useNotifier(t, stubNotifier{})
 
-	type waitExpect int
-	const (
-		waitAny waitExpect = iota
-		waits
-		noWait
-	)
-
 	start, end := activeWindow()
-	past := time.Now().UTC()
-	pastStart, pastEnd := past.Add(-2*time.Hour).Format(schedulerDateLayout), past.Add(-time.Hour).Format(schedulerDateLayout)
+	pastStart, pastEnd := window(-2*time.Hour, -time.Hour)
 
-	mainEvent := func(src string) func(string) string {
-		return func(output string) string { return apgEventJSON(output, src, "MAIN", start, end) }
+	event := func(src, tag string) func(string) string {
+		return func(output string) string { return apgEventJSON(output, src, tag, start, end) }
+	}
+
+	unschedNotifs := []wantNotif{
+		{"previous", "Primary", "SRC1", "Error", "-", isNow},
+		{"current", Unsched.String(), "SRC_NEW", "Error", isNow, isEmpty},
 	}
 
 	tests := []struct {
-		name      string
-		seed      func() *BusState
-		hot       *insite.BusRouting
-		webhook   bool
-		apiStatus int                        // 0 = no events api
-		apiBody   func(output string) string // body for a 200
-		post      string                     // webhook payload delivered during the wait
-		want      wantSchedule
-		notifs    []wantNotif
-		counters  Counters
-		bus       RoutingState
-		wait      waitExpect
-		apiCalls  int32
-		hotEmpty  bool
-		devStart  func(bs *BusState) string
-		devEnd    string
+		name           string
+		seed           func() *BusState
+		apiStatus      int                        // 0 = no events api
+		apiBody        func(output string) string // body for a 200
+		want           wantSchedule
+		notifs         []wantNotif
+		counters       Counters
+		bus            RoutingState
+		apiCalls       int32
+		storeUnchanged bool // the store still holds only the polled SRC1/SRC2 window
+		devStart       func(bs *BusState) string
+		devEnd         string
 	}{
 		{
-			name:     "webhook success with no transition",
-			seed:     func() *BusState { return seedBus("BUS1", Primary, "SRC_NEW", 0, 0, 0) },
-			webhook:  true,
-			post:     apgEventJSON("BUS1", "SRC_NEW", "MAIN", start, end),
-			want:     wantSchedule{matched: true, source: "hotcache", status: "Primary", primary: "SRC_NEW", backup: isEmpty},
-			counters: Counters{Primary: 1},
-			bus:      Primary,
+			name:      "events api success with no transition",
+			seed:      func() *BusState { return seedBus("BUS1", Primary, "SRC_NEW", 0, 0, 0) },
+			apiStatus: http.StatusOK,
+			apiBody:   event("SRC_NEW", "MAIN"),
+			want:      wantSchedule{matched: true, source: "recheck", status: "Primary", primary: "SRC_NEW", backup: "SRC2"},
+			counters:  Counters{Primary: 1},
+			bus:       Primary,
+			apiCalls:  1,
 		},
 		{
-			name:    "webhook success as backup is a transition",
-			seed:    func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
-			webhook: true,
-			post:    apgEventJSON("BUS1", "SRC_NEW", "BACKUP", start, end),
-			want:    wantSchedule{matched: true, source: "hotcache", status: "Backup", primary: isEmpty, backup: "SRC_NEW"},
+			// the refreshed BACKUP is merged over the polled window and keeps its primary
+			name:      "events api success as backup is a transition",
+			seed:      func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
+			apiStatus: http.StatusOK,
+			apiBody:   event("SRC_NEW", "BACKUP"),
+			want:      wantSchedule{matched: true, source: "recheck", status: "Backup", primary: "SRC1", backup: "SRC_NEW"},
 			notifs: []wantNotif{
 				{"previous", "Primary", "SRC1", "Error", "-", isNow},
 				{"current", "Backup", "SRC_NEW", "Error", isNow, isEmpty},
 			},
 			counters: Counters{Primary: -1, Backup: 1},
 			bus:      Backup,
+			apiCalls: 1,
 		},
 		{
 			name:      "events api success with a correction",
 			seed:      func() *BusState { return seedBus("BUS1", Backup, "SRC2", 10*time.Minute, 20*time.Minute, 0) },
 			apiStatus: http.StatusOK,
-			apiBody:   mainEvent("SRC_NEW"),
-			want:      wantSchedule{matched: true, source: "hotcache", status: "Primary", primary: "SRC_NEW", backup: isEmpty},
+			apiBody:   event("SRC_NEW", "MAIN"),
+			want:      wantSchedule{matched: true, source: "recheck", status: "Primary", primary: "SRC_NEW", backup: "SRC2"},
 			notifs: []wantNotif{
 				{"previous", "Backup", "SRC2", "Correction", "", isNow},
 				{"current", "Primary", "SRC_NEW", "Correction", isNow, isEmpty},
 			},
 			counters: Counters{Backup: -1, Primary: 1},
 			bus:      Primary,
-			wait:     noWait,
 			apiCalls: 1,
 			devStart: func(bs *BusState) string { return fmtTime(bs.TransitionStart) },
 			devEnd:   isNow,
 		},
 		{
-			name:      "events api success returns before the webhook wait",
-			seed:      func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
-			webhook:   true,
-			apiStatus: http.StatusOK,
-			apiBody:   mainEvent("SRC_NEW"),
-			want:      wantSchedule{matched: true, source: "hotcache", status: "Primary", primary: "SRC_NEW"},
-			counters:  Counters{Primary: 1},
-			bus:       Primary,
-			wait:      noWait,
-			apiCalls:  1,
+			name:           "no events api",
+			seed:           func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
+			want:           wantSchedule{matched: true, source: "cache", status: Unsched.String(), primary: "SRC1", backup: "SRC2"},
+			notifs:         unschedNotifs,
+			counters:       Counters{Primary: -1, Unsched: 1},
+			bus:            Unsched,
+			storeUnchanged: true,
 		},
 		{
-			name:    "webhook only failure",
-			seed:    func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
-			webhook: true,
-			want:    wantSchedule{matched: true, source: "cache", status: Unsched.String(), primary: "SRC1", backup: "SRC2"},
-			notifs: []wantNotif{
-				{"previous", "Primary", "SRC1", "Error", "-", isNow},
-				{"current", Unsched.String(), "SRC_NEW", "Error", isNow, isEmpty},
-			},
-			counters: Counters{Primary: -1, Unsched: 1},
-			bus:      Unsched,
-			wait:     waits,
-			hotEmpty: true,
+			name:           "events api error",
+			seed:           func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
+			apiStatus:      http.StatusInternalServerError,
+			want:           wantSchedule{matched: true, source: "cache", status: Unsched.String(), primary: "SRC1", backup: "SRC2"},
+			notifs:         unschedNotifs,
+			counters:       Counters{Primary: -1, Unsched: 1},
+			bus:            Unsched,
+			apiCalls:       1,
+			storeUnchanged: true,
 		},
 		{
-			name:      "events api error without webhook",
-			seed:      func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
-			apiStatus: http.StatusInternalServerError,
-			want:      wantSchedule{matched: true, source: "cache", status: Unsched.String(), primary: "SRC1", backup: "SRC2"},
-			notifs: []wantNotif{
-				{"previous", "Primary", "SRC1", "Error", "-", isNow},
-				{"current", Unsched.String(), "SRC_NEW", "Error", isNow, isEmpty},
-			},
-			counters: Counters{Primary: -1, Unsched: 1},
-			bus:      Unsched,
-			wait:     noWait,
-			apiCalls: 1,
-			hotEmpty: true,
-		},
-		{
-			name:      "events api error falls back to the webhook",
-			seed:      func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
-			webhook:   true,
-			apiStatus: http.StatusInternalServerError,
-			post:      apgEventJSON("BUS1", "SRC_NEW", "MAIN", start, end),
-			want:      wantSchedule{matched: true, source: "hotcache", status: "Primary", primary: "SRC_NEW"},
-			counters:  Counters{Primary: 1},
-			bus:       Primary,
-			apiCalls:  1,
-		},
-		{
+			// the refresh is stored, but the event reports the routing the status was resolved against
 			name:      "events api returns a different source",
 			seed:      func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
-			webhook:   true,
 			apiStatus: http.StatusOK,
-			apiBody:   mainEvent("OTHER_SRC"),
+			apiBody:   event("OTHER_SRC", "MAIN"),
 			want:      wantSchedule{matched: true, source: "cache", status: Unsched.String(), primary: "SRC1", backup: "SRC2"},
-			notifs: []wantNotif{
-				{"previous", "Primary", "SRC1", "Error", "-", isNow},
-				{"current", Unsched.String(), "SRC_NEW", "Error", isNow, isEmpty},
-			},
-			counters: Counters{Primary: -1, Unsched: 1},
-			bus:      Unsched,
-			wait:     waits,
-			apiCalls: 1,
+			notifs:    unschedNotifs,
+			counters:  Counters{Primary: -1, Unsched: 1},
+			bus:       Unsched,
+			apiCalls:  1,
 		},
 		{
 			name:      "events api returns an inactive window",
@@ -1096,13 +1024,12 @@ func TestCreateEventFromEdgeUnscheduledRecheck(t *testing.T) {
 			apiBody: func(output string) string {
 				return apgEventJSON(output, "SRC_NEW", "MAIN", pastStart, pastEnd)
 			},
-			want:     wantSchedule{matched: true, source: "cache", status: Unsched.String()},
-			notifs:   []wantNotif{{"previous", "Primary", "SRC1", "Error", "-", isNow}, {"current", Unsched.String(), "SRC_NEW", "Error", isNow, isEmpty}},
-			counters: Counters{Primary: -1, Unsched: 1},
-			bus:      Unsched,
-			wait:     noWait,
-			apiCalls: 1,
-			hotEmpty: true,
+			want:           wantSchedule{matched: true, source: "cache", status: Unsched.String()},
+			notifs:         unschedNotifs,
+			counters:       Counters{Primary: -1, Unsched: 1},
+			bus:            Unsched,
+			apiCalls:       1,
+			storeUnchanged: true,
 		},
 		{
 			name:      "events api returns untagged and non-apg events",
@@ -1111,36 +1038,12 @@ func TestCreateEventFromEdgeUnscheduledRecheck(t *testing.T) {
 			apiBody: func(output string) string {
 				return "[" + apgEventJSON(output, "SRC_NEW", "OTHER", start, end) + `,{"task":"router","output":"` + output + `"}]`
 			},
-			want:     wantSchedule{matched: true, source: "cache", status: Unsched.String()},
-			notifs:   []wantNotif{{"previous", "Primary", "SRC1", "Error", "-", isNow}, {"current", Unsched.String(), "SRC_NEW", "Error", isNow, isEmpty}},
-			counters: Counters{Primary: -1, Unsched: 1},
-			bus:      Unsched,
-			wait:     noWait,
-			apiCalls: 1,
-			hotEmpty: true,
-		},
-		{
-			// the hot entry wins the lookup but doesn't match the source, so the routing stays the hot one
-			name:     "hot entry present for a different source",
-			seed:     func() *BusState { return seedBus("BUS1", Primary, "OTHER_SRC", 0, 0, 0) },
-			hot:      routing("OTHER_SRC", "", time.Now().Add(-time.Minute), time.Now().Add(time.Hour)),
-			webhook:  true,
-			want:     wantSchedule{matched: true, source: "hotcache", status: Unsched.String(), primary: "OTHER_SRC", backup: isEmpty},
-			notifs:   []wantNotif{{"previous", "Primary", "OTHER_SRC", "Error", "-", isNow}, {"current", Unsched.String(), "SRC_NEW", "Error", isNow, isEmpty}},
-			counters: Counters{Primary: -1, Unsched: 1},
-			bus:      Unsched,
-			wait:     waits,
-		},
-		{
-			name:     "expired hot entry for the source",
-			seed:     func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
-			hot:      routing("SRC_NEW", "", time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour)),
-			webhook:  true,
-			want:     wantSchedule{matched: true, source: "cache", status: Unsched.String(), primary: "SRC1", backup: "SRC2"},
-			notifs:   []wantNotif{{"previous", "Primary", "SRC1", "Error", "-", isNow}, {"current", Unsched.String(), "SRC_NEW", "Error", isNow, isEmpty}},
-			counters: Counters{Primary: -1, Unsched: 1},
-			bus:      Unsched,
-			wait:     waits,
+			want:           wantSchedule{matched: true, source: "cache", status: Unsched.String()},
+			notifs:         unschedNotifs,
+			counters:       Counters{Primary: -1, Unsched: 1},
+			bus:            Unsched,
+			apiCalls:       1,
+			storeUnchanged: true,
 		},
 	}
 
@@ -1151,21 +1054,15 @@ func TestCreateEventFromEdgeUnscheduledRecheck(t *testing.T) {
 
 			seeded := *tt.seed()
 
-			if tt.hot != nil {
-				scheduleHotCache.Set("BUS1", tt.hot)
-			}
+			var (
+				opts  beatOpts
+				calls *atomic.Int32
+			)
 
-			opts := beatOpts{webhook: tt.webhook}
-
-			var calls *atomic.Int32
 			if tt.apiStatus != 0 {
 				var srv *httptest.Server
 				srv, calls = newEventsAPIStub(t, tt.apiStatus, tt.apiBody)
 				opts.eventsAPI = srv.URL
-			}
-
-			if tt.post != "" {
-				postWebhookAfter(10*time.Millisecond, tt.post)
 			}
 
 			counters := &Counters{}
@@ -1177,25 +1074,17 @@ func TestCreateEventFromEdgeUnscheduledRecheck(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			elapsed := time.Since(began)
-
-			switch tt.wait {
-			case waits:
-				if elapsed < testWait {
-					t.Errorf("took %s, expected the webhook wait", elapsed)
-				}
-			case noWait:
-				if elapsed >= testWait {
-					t.Errorf("took %s, expected no wait", elapsed)
-				}
+			if elapsed := time.Since(began); elapsed >= testWait {
+				t.Errorf("took %s, expected no wait", elapsed)
 			}
 
 			if calls != nil && calls.Load() != tt.apiCalls {
 				t.Errorf("events api calls = %d, want %d", calls.Load(), tt.apiCalls)
 			}
 
-			if tt.hotEmpty && scheduleHotCache.Length() != 0 {
-				t.Errorf("hot cache should be empty, has %d entries", scheduleHotCache.Length())
+			if routes := scheduleStore.Routes("BUS1"); tt.storeUnchanged &&
+				(len(routes) != 1 || routes[0].Pri != "SRC1" || routes[0].Sec != "SRC2" || scheduleStore.Length() != 1) {
+				t.Errorf("schedule store changed: BUS1 = %+v, %d outputs", routes, scheduleStore.Length())
 			}
 
 			assertSchedule(t, res, tt.want)
@@ -1344,7 +1233,7 @@ func TestCreateEventFromEdgeQueryDefunct(t *testing.T) {
 		checkValue(t, "deviationStartTime", fieldStr(t, res, "schedule.deviationStartTime"), "-")
 	})
 
-	t.Run("query does not recheck the hot cache", func(t *testing.T) {
+	t.Run("query does not recheck", func(t *testing.T) {
 		resetCaches()
 		seedSchedule()
 		seedBus("BUS1", Primary, "SRC1", 0, 0, 0)
@@ -1352,7 +1241,7 @@ func TestCreateEventFromEdgeQueryDefunct(t *testing.T) {
 		srv, calls := newEventsAPIStub(t, http.StatusOK, func(string) string { return "[]" })
 		began := time.Now()
 
-		res, _ := newTestBeat(t, beatOpts{webhook: true, eventsAPI: srv.URL}).CreateEventFromEdge(
+		res, _ := newTestBeat(t, beatOpts{eventsAPI: srv.URL}).CreateEventFromEdge(
 			newTestEdge("BUS1", edgeOpts{src: "SRC_NEW"}), "MES", &Counters{}, Query)
 
 		if elapsed := time.Since(began); elapsed >= testWait || calls.Load() != 0 {
@@ -1462,7 +1351,7 @@ func TestCreateEventFromEdgeSequence(t *testing.T) {
 	departure := fmtTime(departed.TransitionStart)
 	backupAt := fmtTime(departed.Transition)
 
-	// step 2: Backup -> Unsched (hot cache disabled, no recheck). TransitionStart is kept
+	// step 2: Backup -> Unsched (no events api, no recheck). TransitionStart is kept
 	res = notification("SRC_NEW")
 	assertNotifications(t, res.notifications, []wantNotif{
 		{"previous", "Backup", "SRC2", "Error", backupAt, isNow},

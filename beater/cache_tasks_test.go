@@ -1,37 +1,31 @@
 package beater
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	insite "github.com/thetherington/routebeat/beater/analytics"
-	"github.com/thetherington/routebeat/beater/httpserver"
+	"github.com/thetherington/routebeat/beater/eventsapi"
+	"github.com/thetherington/routebeat/beater/schedule"
 )
 
-// fixed reference time for the active window tests
-var testNow = time.Date(2026, 8, 16, 13, 30, 0, 0, time.UTC)
-
 func resetCaches() {
-	scheduleCache.Load(make(map[string][]*insite.BusRouting))
-	scheduleHotCache.Load(make(map[string]*insite.BusRouting))
+	scheduleStore.Clear()
 	busCache.Load(make(map[string]*BusState))
 }
 
-func resetSchedulerEventCounters() {
-	atomic.StoreInt64(&schedulerEventCounters.nonApg, 0)
-	atomic.StoreInt64(&schedulerEventCounters.invalid, 0)
-	atomic.StoreInt64(&schedulerEventCounters.noTag, 0)
-	atomic.StoreInt64(&schedulerEventCounters.apgInTime, 0)
-	atomic.StoreInt64(&schedulerEventCounters.apgOutTime, 0)
+func resetScheduleEventCounters() {
+	atomic.StoreInt64(&scheduleEventCounters.events, 0)
+	atomic.StoreInt64(&scheduleEventCounters.nonApg, 0)
+	atomic.StoreInt64(&scheduleEventCounters.invalid, 0)
+	atomic.StoreInt64(&scheduleEventCounters.noTag, 0)
+	atomic.StoreInt64(&scheduleEventCounters.routings, 0)
 }
 
 func apgEventJSON(output, input, tag, start, end string) string {
@@ -41,385 +35,299 @@ func apgEventJSON(output, input, tag, start, end string) string {
 
 func timePtr(t time.Time) *time.Time { return &t }
 
-func routing(pri, sec string, start, end time.Time) *insite.BusRouting {
-	return &insite.BusRouting{Pri: pri, Sec: sec, StartDate: timePtr(start), EndDate: timePtr(end)}
+func routing(pri, sec string, start, end time.Time) *schedule.BusRouting {
+	return &schedule.BusRouting{Pri: pri, Sec: sec, StartDate: timePtr(start), EndDate: timePtr(end)}
 }
 
-func TestParseSchedulerEvents(t *testing.T) {
-	apg := apgEventJSON("TLUPDT", "SRC1", "MAIN", "2026/08/16 13:00:00", "2026/08/16 14:00:00")
-
-	tests := []struct {
-		name        string
-		payload     string
-		wantErr     bool
-		wantEvents  int
-		wantNonApg  int64
-		wantInvalid int64
-	}{
-		{name: "single object", payload: apg, wantEvents: 1},
-		{name: "array", payload: "[" + apg + "," + apg + "]", wantEvents: 2},
-		{name: "leading whitespace", payload: "\n\t " + apg, wantEvents: 1},
-		{name: "non-apg object", payload: `{"task":"router","output":"X"}`, wantEvents: 0, wantNonApg: 1},
-		{
-			name:       "non-apg with a different shape",
-			payload:    `[{"task":"router","state":"running","history":{"a":1}}]`,
-			wantEvents: 0, wantNonApg: 1,
-		},
-		{
-			name:       "apg value in another field",
-			payload:    `[{"task":"router","comment":"apg"}]`,
-			wantEvents: 0, wantNonApg: 1,
-		},
-		{
-			name:       "task is not a string",
-			payload:    `[{"task":5,"comment":"apg"}]`,
-			wantEvents: 0, wantInvalid: 1,
-		},
-		{
-			name:       "apg event that does not fit the struct",
-			payload:    `[{"task":"apg","state":"running"}]`,
-			wantEvents: 0, wantInvalid: 1,
-		},
-		{
-			name:       "mixed array keeps valid items",
-			payload:    "[" + apg + `,{"task":"router"},{"task":"apg","state":"bad"},` + apg + "]",
-			wantEvents: 2, wantNonApg: 1, wantInvalid: 1,
-		},
-		// valid JSON that isn't an event is skipped without an error
-		{name: "json string", payload: `"apg"`, wantEvents: 0, wantNonApg: 1},
-		{name: "json number", payload: `42`, wantEvents: 0, wantNonApg: 1},
-		{name: "json null", payload: `null`, wantEvents: 0, wantNonApg: 1},
-		{name: "empty object", payload: `{}`, wantEvents: 0, wantNonApg: 1},
-		{name: "empty array", payload: `[]`, wantEvents: 0},
-		{name: "array of scalars", payload: `[1,"apg",null]`, wantEvents: 0, wantNonApg: 2, wantInvalid: 1},
-
-		// only payloads that aren't JSON, or are malformed JSON, are errors
-		{name: "empty", payload: "   ", wantErr: true},
-		{name: "not json", payload: `task=apg`, wantErr: true},
-		{name: "malformed array", payload: `[{"task":"apg"`, wantErr: true},
-		{name: "malformed object", payload: `{"task":"apg"`, wantErr: true},
-		{name: "object with trailing data", payload: `{"task":"apg"} {"task":"apg"}`, wantErr: true},
-		{name: "malformed item in an array", payload: `[{"task":"apg"},{"task":}]`, wantErr: true},
+// setSchedule replaces the schedule store with one routing per output
+func setSchedule(routes map[string]*schedule.BusRouting) {
+	lists := make(map[string][]*schedule.BusRouting, len(routes))
+	for output, r := range routes {
+		lists[output] = []*schedule.BusRouting{r}
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetSchedulerEventCounters()
-
-			events, err := parseSchedulerEvents([]byte(tt.payload))
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
-			}
-
-			if len(events) != tt.wantEvents {
-				t.Errorf("events = %d, want %d", len(events), tt.wantEvents)
-			}
-
-			if got := atomic.LoadInt64(&schedulerEventCounters.nonApg); got != tt.wantNonApg {
-				t.Errorf("nonApg = %d, want %d", got, tt.wantNonApg)
-			}
-
-			if got := atomic.LoadInt64(&schedulerEventCounters.invalid); got != tt.wantInvalid {
-				t.Errorf("invalid = %d, want %d", got, tt.wantInvalid)
-			}
-		})
-	}
+	scheduleStore.Replace(lists, time.Now())
 }
 
-// the webhook rejects only payloads that aren't JSON or are malformed JSON. everything else is accepted,
-// and only active apg events reach the hot cache
-func TestSchedulerWebhookResponses(t *testing.T) {
-	start, end := activeWindow()
-	past := time.Now().UTC()
-	pastStart, pastEnd := past.Add(-2*time.Hour).Format(schedulerDateLayout), past.Add(-time.Hour).Format(schedulerDateLayout)
-
-	tests := []struct {
-		name       string
-		payload    string
-		wantStatus int
-		wantCached bool
-	}{
-		{name: "active apg event", payload: apgEventJSON("BUS1", "SRC1", "MAIN", start, end), wantStatus: http.StatusAccepted, wantCached: true},
-		{name: "active apg event in an array", payload: "[" + apgEventJSON("BUS1", "SRC1", "MAIN", start, end) + "]", wantStatus: http.StatusAccepted, wantCached: true},
-		{name: "inactive apg event", payload: apgEventJSON("BUS1", "SRC1", "MAIN", pastStart, pastEnd), wantStatus: http.StatusAccepted},
-		{name: "apg event without a MAIN or BACKUP tag", payload: apgEventJSON("BUS1", "SRC1", "EXTERNAL", start, end), wantStatus: http.StatusAccepted},
-		{name: "apg event with a bad date", payload: apgEventJSON("BUS1", "SRC1", "MAIN", "tomorrow", end), wantStatus: http.StatusAccepted},
-		{name: "apg event that doesn't fit the struct", payload: `{"task":"apg","state":"running"}`, wantStatus: http.StatusAccepted},
-		{name: "non-apg event", payload: `{"task":"silence","event_params":{"silence":true}}`, wantStatus: http.StatusAccepted},
-		{name: "array of non-apg events", payload: `[{"task":"route"},{"task":"xmuds","event_params":{"data":["a"]}}]`, wantStatus: http.StatusAccepted},
-		{name: "json scalar", payload: `"hello"`, wantStatus: http.StatusAccepted},
-		{name: "empty array", payload: `[]`, wantStatus: http.StatusAccepted},
-		{name: "not json", payload: `task=apg&output=BUS1`, wantStatus: http.StatusBadRequest},
-		{name: "malformed object", payload: `{"task":"apg","output":`, wantStatus: http.StatusBadRequest},
-		{name: "malformed array", payload: `[{"task":"apg"},`, wantStatus: http.StatusBadRequest},
-		{name: "whitespace only", payload: " \n\t ", wantStatus: http.StatusBadRequest},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetCaches()
-
-			s := httpserver.New(8082, nil, SchedulerHookCallback)
-
-			w := httptest.NewRecorder()
-			s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/scheduler/events", strings.NewReader(tt.payload)))
-
-			if w.Code != tt.wantStatus {
-				t.Errorf("status = %d, want %d (body %s)", w.Code, tt.wantStatus, w.Body.String())
-			}
-
-			if cached := scheduleHotCache.Has("BUS1"); cached != tt.wantCached {
-				t.Errorf("hot cache has BUS1 = %t, want %t", cached, tt.wantCached)
-			}
-		})
-	}
-}
-
-func TestSchedulerAPGEventBusRouting(t *testing.T) {
-	tests := []struct {
-		name    string
-		event   SchedulerAPGEvent
-		wantErr error
-		wantPri string
-		wantSec string
-	}{
-		{
-			name:    "main",
-			event:   SchedulerAPGEvent{Input: "SRC1", Tags: []string{"MAIN"}, StartDate: "2026/08/16 13:00:00", EndDate: "2026/08/16 14:00:00"},
-			wantPri: "SRC1",
-		},
-		{
-			name:    "backup",
-			event:   SchedulerAPGEvent{Input: "SRC2", Tags: []string{"BACKUP"}, StartDate: "2026/08/16 13:00:00", EndDate: "2026/08/16 14:00:00"},
-			wantSec: "SRC2",
-		},
-		{
-			name:    "no tag",
-			event:   SchedulerAPGEvent{Input: "SRC1", Tags: []string{"OTHER"}, StartDate: "2026/08/16 13:00:00", EndDate: "2026/08/16 14:00:00"},
-			wantErr: errEventNoTag,
-		},
-		{
-			name:    "before window",
-			event:   SchedulerAPGEvent{Input: "SRC1", Tags: []string{"MAIN"}, StartDate: "2026/08/16 13:31:00", EndDate: "2026/08/16 14:00:00"},
-			wantErr: errEventInactive,
-		},
-		{
-			name:    "after window",
-			event:   SchedulerAPGEvent{Input: "SRC1", Tags: []string{"MAIN"}, StartDate: "2026/08/16 12:00:00", EndDate: "2026/08/16 13:29:59"},
-			wantErr: errEventInactive,
-		},
-		{
-			name:    "window bounds are inclusive",
-			event:   SchedulerAPGEvent{Input: "SRC1", Tags: []string{"MAIN"}, StartDate: "2026/08/16 13:30:00", EndDate: "2026/08/16 13:30:00"},
-			wantPri: "SRC1",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			br, err := tt.event.busRouting(testNow)
-			if err != tt.wantErr {
-				t.Fatalf("err = %v, want %v", err, tt.wantErr)
-			}
-
-			if err != nil {
-				return
-			}
-
-			if br.Pri != tt.wantPri || br.Sec != tt.wantSec {
-				t.Errorf("routing = %+v, want pri=%q sec=%q", br, tt.wantPri, tt.wantSec)
-			}
-		})
-	}
-
-	t.Run("bad date", func(t *testing.T) {
-		e := SchedulerAPGEvent{Input: "SRC1", Tags: []string{"MAIN"}, StartDate: "2026-08-16T13:00:00Z", EndDate: "2026/08/16 14:00:00"}
-		if _, err := e.busRouting(testNow); err == nil {
-			t.Fatal("expected a parse error")
-		}
-	})
-}
-
-func TestMergeBusRouting(t *testing.T) {
-	start, end := testNow.Add(-30*time.Minute), testNow.Add(30*time.Minute)
-
-	t.Run("nil existing returns a copy", func(t *testing.T) {
-		incoming := routing("SRC1", "", start, end)
-
-		got := mergeBusRouting(nil, incoming)
-		if got == incoming || *got != *incoming {
-			t.Errorf("got %+v, want a copy of %+v", got, incoming)
-		}
-	})
-
-	t.Run("overlapping window merges", func(t *testing.T) {
-		existing := routing("OLD", "SEC", start, end)
-		incoming := routing("NEW", "", start.Add(time.Minute), end)
-
-		got := mergeBusRouting(existing, incoming)
-		if got.Pri != "NEW" || got.Sec != "SEC" || !got.StartDate.Equal(*incoming.StartDate) {
-			t.Errorf("got %+v", got)
-		}
-
-		if existing.Pri != "OLD" || incoming.Sec != "" {
-			t.Error("inputs were modified")
-		}
-	})
-
-	t.Run("non-overlapping window replaces", func(t *testing.T) {
-		existing := routing("OLD", "SEC", start.Add(-2*time.Hour), start.Add(-time.Hour))
-		incoming := routing("NEW", "", start, end)
-
-		got := mergeBusRouting(existing, incoming)
-		if got.Pri != "NEW" || got.Sec != "" {
-			t.Errorf("got %+v, want the previous window's Sec dropped", got)
-		}
-	})
-}
-
-func TestApplySchedulerEvents(t *testing.T) {
-	resetCaches()
-	resetSchedulerEventCounters()
-
-	events := []SchedulerAPGEvent{
-		{Task: "apg", Output: "BUS1", Input: "SRC1", Tags: []string{"MAIN"}, StartDate: "2026/08/16 13:00:00", EndDate: "2026/08/16 14:00:00"},
-		{Task: "apg", Output: "BUS1", Input: "SRC2", Tags: []string{"BACKUP"}, StartDate: "2026/08/16 13:00:00", EndDate: "2026/08/16 14:00:00"},
-		{Task: "apg", Output: "BUS2", Input: "SRC3", Tags: []string{}, StartDate: "2026/08/16 13:00:00", EndDate: "2026/08/16 14:00:00"},
-		{Task: "apg", Output: "BUS3", Input: "SRC4", Tags: []string{"MAIN"}, StartDate: "2026/08/16 15:00:00", EndDate: "2026/08/16 16:00:00"},
-	}
-
-	if got := applySchedulerEvents(events, testNow); got != 1 {
-		t.Fatalf("updated = %d, want 1", got)
-	}
-
-	held, _ := scheduleHotCache.Get("BUS1")
-	if held.Pri != "SRC1" || held.Sec != "SRC2" {
-		t.Fatalf("BUS1 = %+v, want pri=SRC1 sec=SRC2", held)
-	}
-
-	if scheduleHotCache.Has("BUS2") || scheduleHotCache.Has("BUS3") {
-		t.Error("untagged or inactive events were cached")
-	}
-
-	if got := atomic.LoadInt64(&schedulerEventCounters.noTag); got != 1 {
-		t.Errorf("noTag = %d, want 1", got)
-	}
-
-	if got := atomic.LoadInt64(&schedulerEventCounters.apgOutTime); got != 1 {
-		t.Errorf("apgOutTime = %d, want 1", got)
-	}
-
-	// a later MAIN-only update keeps the Sec and does not mutate the routing a reader already holds
-	applySchedulerEvents([]SchedulerAPGEvent{
-		{Task: "apg", Output: "BUS1", Input: "SRC9", Tags: []string{"MAIN"}, StartDate: "2026/08/16 13:00:00", EndDate: "2026/08/16 14:00:00"},
-	}, testNow)
-
-	updated, _ := scheduleHotCache.Get("BUS1")
-	if updated.Pri != "SRC9" || updated.Sec != "SRC2" {
-		t.Errorf("BUS1 = %+v, want pri=SRC9 sec=SRC2", updated)
-	}
-
-	if held.Pri != "SRC1" {
-		t.Error("routing held by a reader was mutated in place")
-	}
-}
-
-func TestSchedulerHookCallbackConcurrentReads(t *testing.T) {
-	resetCaches()
-
-	// time.Parse returns UTC, so build the window in UTC for the active check
+// window returns a start/end date pair (scheduler format, UTC) from now+from to now+to
+func window(from, to time.Duration) (string, string) {
 	now := time.Now().UTC()
-	start, end := now.Add(-time.Hour).Format(schedulerDateLayout), now.Add(time.Hour).Format(schedulerDateLayout)
-
-	var wg sync.WaitGroup
-
-	for i := range 50 {
-		wg.Add(2)
-
-		go func() {
-			defer wg.Done()
-			payload := apgEventJSON("BUS1", fmt.Sprintf("SRC%d", i), "MAIN", start, end)
-			if err := SchedulerHookCallback(context.Background(), []byte(payload)); err != nil {
-				t.Error(err)
-			}
-		}()
-
-		go func() {
-			defer wg.Done()
-			if r, _, ok := GetBusRoutingFromCaches("BUS1", true, true); ok {
-				_ = r.Pri + r.Sec
-			}
-		}()
-	}
-
-	wg.Wait()
+	return now.Add(from).Format(schedule.DateLayout), now.Add(to).Format(schedule.DateLayout)
 }
 
-func TestGetBusRoutingFromCaches(t *testing.T) {
+// activeWindow returns a start/end date pair (scheduler format, UTC) around now
+func activeWindow() (string, string) {
+	return window(-time.Hour, time.Hour)
+}
+
+// newTestEventsAPI creates an events api client with the apg task filter, as in New()
+func newTestEventsAPI(t *testing.T, url string) *eventsapi.Client {
+	t.Helper()
+
+	c, err := eventsapi.New(eventsapi.Config{Url: url, Timeout: time.Second, BulkTimeout: time.Second, Task: "apg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return c
+}
+
+func TestRelativeTime(t *testing.T) {
+	tests := map[time.Duration]string{
+		0:                "now",
+		25 * time.Minute: "now+25m",
+		time.Hour:        "now+1h",
+		90 * time.Minute: "now+90m",
+		45 * time.Second: "now+45s",
+	}
+
+	for d, want := range tests {
+		if got := relativeTime(d); got != want {
+			t.Errorf("relativeTime(%s) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+// pollStub serves the bulk poll: the body for each start value, or a 500 when the body is ""
+type pollStub struct {
+	mu      sync.Mutex
+	bodies  map[string]string
+	queries []url.Values
+	during  func(start string) // runs while the request is being served
+}
+
+func (p *pollStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	start := q.Get("start")
+
+	p.mu.Lock()
+	p.queries = append(p.queries, q)
+	body := p.bodies[start]
+	during := p.during
+	p.mu.Unlock()
+
+	if during != nil {
+		during(start)
+	}
+
+	if body == "" {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Write([]byte(body))
+}
+
+func TestPollSchedule(t *testing.T) {
+	nowStart, nowEnd := activeWindow()
+	nextStart, nextEnd := window(time.Hour, 2*time.Hour)
+
+	nowBody := "[" +
+		apgEventJSON("BUS1", "PRI", "MAIN", nowStart, nowEnd) + "," +
+		apgEventJSON("BUS1", "SEC", "BACKUP", nowStart, nowEnd) + "," +
+		apgEventJSON("BUS2", "B_PRI", "MAIN", nowStart, nowEnd) + "," +
+		apgEventJSON("BUS3", "X", "EXTERNAL", nowStart, nowEnd) + "]"
+
+	aheadBody := "[" +
+		apgEventJSON("BUS1", "NEXT_PRI", "MAIN", nextStart, nextEnd) + "," +
+		// BUS2's current event is still running at the lookahead time
+		apgEventJSON("BUS2", "B_PRI", "MAIN", nowStart, nowEnd) + "]"
+
+	t.Run("builds the store from now and the lookahead", func(t *testing.T) {
+		resetCaches()
+		resetScheduleEventCounters()
+
+		stub := &pollStub{bodies: map[string]string{"now": nowBody, "now+25m": aheadBody}}
+		srv := httptest.NewServer(stub)
+		defer srv.Close()
+
+		// an output missing from the poll is removed
+		setSchedule(map[string]*schedule.BusRouting{"GONE": routing("G", "", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))})
+
+		pollSchedule(newTestEventsAPI(t, srv.URL), 25*time.Minute)
+
+		if len(stub.queries) != 2 {
+			t.Fatalf("requests = %d, want 2", len(stub.queries))
+		}
+
+		for i, at := range []string{"now", "now+25m"} {
+			want := url.Values{"start": {at}, "end": {at}, "task": {"apg"}}
+			if got := stub.queries[i]; got.Encode() != want.Encode() {
+				t.Errorf("request %d query = %v, want %v", i, got, want)
+			}
+		}
+
+		bus1 := scheduleStore.Routes("BUS1")
+		if len(bus1) != 2 || bus1[0].Pri != "PRI" || bus1[0].Sec != "SEC" || bus1[1].Pri != "NEXT_PRI" {
+			t.Errorf("BUS1 = %+v, want the current window then the upcoming one", bus1)
+		}
+
+		if bus2 := scheduleStore.Routes("BUS2"); len(bus2) != 1 {
+			t.Errorf("BUS2 = %+v, want the duplicate window folded", bus2)
+		}
+
+		if scheduleStore.Length() != 2 {
+			t.Errorf("outputs = %d, want 2 (BUS3 untagged, GONE removed)", scheduleStore.Length())
+		}
+
+		if got := atomic.LoadInt64(&scheduleEventCounters.events); got != 6 {
+			t.Errorf("events counter = %d, want 6", got)
+		}
+
+		if got := atomic.LoadInt64(&scheduleEventCounters.noTag); got != 1 {
+			t.Errorf("noTag counter = %d, want 1", got)
+		}
+	})
+
+	t.Run("a failed now fetch keeps the previous schedule", func(t *testing.T) {
+		resetCaches()
+
+		stub := &pollStub{bodies: map[string]string{"now+25m": aheadBody}}
+		srv := httptest.NewServer(stub)
+		defer srv.Close()
+
+		setSchedule(map[string]*schedule.BusRouting{"BUS1": routing("KEEP", "", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))})
+
+		pollSchedule(newTestEventsAPI(t, srv.URL), 25*time.Minute)
+
+		if len(stub.queries) != 1 {
+			t.Errorf("requests = %d, want 1 (no lookahead request after a failure)", len(stub.queries))
+		}
+
+		if r, ok := scheduleStore.Active("BUS1", time.Now(), true); !ok || r.Pri != "KEEP" || scheduleStore.Length() != 1 {
+			t.Errorf("BUS1 = %+v %t, want the previous schedule", r, ok)
+		}
+	})
+
+	t.Run("a failed lookahead fetch still loads now", func(t *testing.T) {
+		resetCaches()
+
+		stub := &pollStub{bodies: map[string]string{"now": nowBody}}
+		srv := httptest.NewServer(stub)
+		defer srv.Close()
+
+		pollSchedule(newTestEventsAPI(t, srv.URL), 25*time.Minute)
+
+		if bus1 := scheduleStore.Routes("BUS1"); len(bus1) != 1 || bus1[0].Pri != "PRI" {
+			t.Errorf("BUS1 = %+v, want the current window only", bus1)
+		}
+	})
+
+	t.Run("a refresh during the poll is kept", func(t *testing.T) {
+		resetCaches()
+
+		stub := &pollStub{bodies: map[string]string{"now": nowBody, "now+25m": aheadBody}}
+		stub.during = func(start string) {
+			if start == "now+25m" {
+				scheduleStore.Upsert("BUS1", []*schedule.BusRouting{
+					routing("REFRESHED", "", time.Now().Add(-time.Minute), time.Now().Add(time.Hour)),
+				}, time.Now())
+			}
+		}
+
+		srv := httptest.NewServer(stub)
+		defer srv.Close()
+
+		pollSchedule(newTestEventsAPI(t, srv.URL), 25*time.Minute)
+
+		if r, ok := scheduleStore.Active("BUS1", time.Now(), true); !ok || r.Pri != "REFRESHED" {
+			t.Errorf("BUS1 = %+v %t, want the refreshed routing", r, ok)
+		}
+
+		if r, ok := scheduleStore.Active("BUS2", time.Now(), true); !ok || r.Pri != "B_PRI" {
+			t.Errorf("BUS2 = %+v %t, want the polled routing", r, ok)
+		}
+	})
+}
+
+func TestRefreshOutput(t *testing.T) {
+	start, end := activeWindow()
+
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Write([]byte("[" +
+			apgEventJSON("BUS1", "A1", "MAIN", start, end) + "," +
+			apgEventJSON("BUS2", "B1", "MAIN", start, end) + "," +
+			apgEventJSON("BUS1", "A2", "BACKUP", start, end) + "," +
+			apgEventJSON("BUS3", "C2", "BACKUP", start, end) + "," +
+			`{"task":"router","output":"X"}` + "]"))
+	}))
+	defer srv.Close()
+
+	resetCaches()
+
+	// an existing BUS2 routing with an overlapping window keeps its backup
+	now := time.Now().UTC()
+	setSchedule(map[string]*schedule.BusRouting{"BUS2": routing("", "OLD_SEC", now.Add(-time.Hour), now.Add(time.Hour))})
+
+	bt := &routebeat{eventsAPI: newTestEventsAPI(t, srv.URL)}
+	if err := bt.refreshOutput("BUS1"); err != nil {
+		t.Fatal(err)
+	}
+
+	if want := (url.Values{"output": {"BUS1"}, "task": {"apg"}}); gotQuery.Encode() != want.Encode() {
+		t.Errorf("query = %v, want %v", gotQuery, want)
+	}
+
+	// a response for one output can carry events for other outputs, all of them are merged
+	want := map[string]struct{ pri, sec string }{
+		"BUS1": {"A1", "A2"},      // requested output, MAIN and BACKUP are not adjacent in the list
+		"BUS2": {"B1", "OLD_SEC"}, // other output merged with the existing routing
+		"BUS3": {"", "C2"},        // other output with only a BACKUP event
+	}
+
+	for output, w := range want {
+		r, _, ok := GetBusRouting(output, true)
+		if !ok || r.Pri != w.pri || r.Sec != w.sec {
+			t.Errorf("%s = %+v %t, want pri=%q sec=%q", output, r, ok, w.pri, w.sec)
+		}
+	}
+
+	t.Run("error", func(t *testing.T) {
+		failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+		}))
+		defer failing.Close()
+
+		bt := &routebeat{eventsAPI: newTestEventsAPI(t, failing.URL)}
+		if err := bt.refreshOutput("BUS1"); err == nil {
+			t.Error("expected an error")
+		}
+	})
+}
+
+func TestGetBusRouting(t *testing.T) {
 	now := time.Now()
-	active := routing("ES_PRI", "ES_SEC", now.Add(-time.Hour), now.Add(time.Hour))
-	hot := routing("HOT_PRI", "", now.Add(-time.Minute), now.Add(time.Hour))
 
-	t.Run("cache only", func(t *testing.T) {
+	t.Run("active", func(t *testing.T) {
 		resetCaches()
-		scheduleCache.Set("BUS1", []*insite.BusRouting{active})
+		setSchedule(map[string]*schedule.BusRouting{"BUS1": routing("PRI", "SEC", now.Add(-time.Hour), now.Add(time.Hour))})
 
-		r, src, ok := GetBusRoutingFromCaches("BUS1", true, true)
-		if !ok || src != SourceCache || r.Pri != "ES_PRI" {
+		r, src, ok := GetBusRouting("BUS1", true)
+		if !ok || src != SourceCache || r.Pri != "PRI" {
 			t.Errorf("got %+v %s %t", r, src, ok)
-		}
-	})
-
-	t.Run("hot cache wins", func(t *testing.T) {
-		resetCaches()
-		scheduleCache.Set("BUS1", []*insite.BusRouting{active})
-		scheduleHotCache.Set("BUS1", hot)
-
-		r, src, ok := GetBusRoutingFromCaches("BUS1", true, true)
-		if !ok || src != SourceHotCache || r.Pri != "HOT_PRI" {
-			t.Errorf("got %+v %s %t", r, src, ok)
-		}
-	})
-
-	t.Run("hot cache disabled", func(t *testing.T) {
-		resetCaches()
-		scheduleCache.Set("BUS1", []*insite.BusRouting{active})
-		scheduleHotCache.Set("BUS1", hot)
-
-		r, src, ok := GetBusRoutingFromCaches("BUS1", true, false)
-		if !ok || src != SourceCache || r.Pri != "ES_PRI" {
-			t.Errorf("got %+v %s %t", r, src, ok)
-		}
-	})
-
-	t.Run("hot cache only", func(t *testing.T) {
-		resetCaches()
-		scheduleHotCache.Set("BUS1", hot)
-
-		_, src, ok := GetBusRoutingFromCaches("BUS1", true, true)
-		if !ok || src != SourceHotCache {
-			t.Errorf("got %s %t", src, ok)
 		}
 	})
 
 	t.Run("not found", func(t *testing.T) {
 		resetCaches()
 
-		_, src, ok := GetBusRoutingFromCaches("BUS1", true, true)
+		_, src, ok := GetBusRouting("BUS1", true)
 		if ok || src != SourceNone {
 			t.Errorf("got %s %t", src, ok)
 		}
 	})
 
-	t.Run("expired cache entry", func(t *testing.T) {
+	t.Run("expired", func(t *testing.T) {
 		resetCaches()
-		scheduleCache.Set("BUS1", []*insite.BusRouting{routing("P", "S", now.Add(-2*time.Hour), now.Add(-time.Hour))})
+		setSchedule(map[string]*schedule.BusRouting{"BUS1": routing("P", "S", now.Add(-2*time.Hour), now.Add(-time.Hour))})
 
-		if _, _, ok := GetBusRoutingFromCaches("BUS1", true, true); ok {
+		if _, src, ok := GetBusRouting("BUS1", true); ok || src != SourceNone {
 			t.Error("expired routing was returned")
 		}
 
-		if _, _, ok := GetBusRoutingFromCaches("BUS1", false, true); !ok {
+		if _, _, ok := GetBusRouting("BUS1", false); !ok {
 			t.Error("routing should be returned when end dates are not validated")
 		}
 	})
@@ -432,140 +340,43 @@ func TestSaveCaches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tests := []struct {
-		name         string
-		saveHotCache bool
-	}{
-		{name: "hot cache enabled saves both caches", saveHotCache: true},
-		{name: "hot cache disabled saves only the bus cache", saveHotCache: false},
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() { os.Chdir(wd) })
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if err := os.Chdir(t.TempDir()); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { os.Chdir(wd) })
+	resetCaches()
+	now := time.Now().UTC()
 
-			resetCaches()
-			now := time.Now().UTC()
-
-			busCache.Set("BUS1", NewBusState(Backup, "SRC2"))
-			scheduleHotCache.Set("ACTIVE", routing("SRC1", "SRC2", now.Add(-time.Hour), now.Add(time.Hour)))
-			scheduleHotCache.Set("EXPIRED", routing("SRC3", "", now.Add(-2*time.Hour), now.Add(-time.Hour)))
-
-			saveCaches(tt.saveHotCache)
-
-			// load the files back the same way New() does
-			resetCaches()
-
-			if err := busCache.LoadFromFile(BUSCACHE_FILE); err != nil {
-				t.Fatal(err)
-			}
-
-			if bs, ok := busCache.Get("BUS1"); !ok || bs.State != Backup || bs.Source != "SRC2" {
-				t.Errorf("bus cache = %+v %t", bs, ok)
-			}
-
-			err := scheduleHotCache.LoadFromFile(HOTCACHE_FILE)
-
-			if !tt.saveHotCache {
-				if !os.IsNotExist(err) {
-					t.Errorf("hot cache file should not be written, load err = %v", err)
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			// expired entries are pruned before saving
-			if r, ok := scheduleHotCache.Get("ACTIVE"); !ok || r.Pri != "SRC1" || r.Sec != "SRC2" {
-				t.Errorf("ACTIVE = %+v %t", r, ok)
-			}
-
-			if scheduleHotCache.Has("EXPIRED") {
-				t.Error("expired entry was saved")
-			}
-		})
-	}
-}
-
-func TestPruneScheduleHotCache(t *testing.T) {
-	now := time.Now()
-
-	seed := func() {
-		resetCaches()
-		scheduleHotCache.Set("ACTIVE", routing("A", "", now.Add(-time.Hour), now.Add(time.Hour)))
-		scheduleHotCache.Set("FUTURE", routing("F", "", now.Add(time.Hour), now.Add(2*time.Hour)))
-		scheduleHotCache.Set("EXPIRED", routing("E", "", now.Add(-2*time.Hour), now.Add(-time.Second)))
-		scheduleHotCache.Set("NODATES", &insite.BusRouting{Pri: "N"})
-	}
-
-	check := func(t *testing.T, removed, want int) {
-		t.Helper()
-
-		if removed != want {
-			t.Errorf("removed = %d, want %d", removed, want)
-		}
-
-		for _, key := range []string{"ACTIVE", "FUTURE"} {
-			if !scheduleHotCache.Has(key) {
-				t.Errorf("%s should be kept", key)
-			}
-		}
-
-		for _, key := range []string{"EXPIRED", "NODATES", "NIL"} {
-			if scheduleHotCache.Has(key) {
-				t.Errorf("%s should be removed", key)
-			}
-		}
-	}
-
-	t.Run("in memory", func(t *testing.T) {
-		seed()
-		scheduleHotCache.Set("NIL", nil)
-		check(t, PruneScheduleHotCache(now), 3)
+	busCache.Set("BUS1", NewBusState(Backup, "SRC2"))
+	setSchedule(map[string]*schedule.BusRouting{
+		"ACTIVE":  routing("SRC1", "SRC2", now.Add(-time.Hour), now.Add(time.Hour)),
+		"EXPIRED": routing("SRC3", "", now.Add(-2*time.Hour), now.Add(-time.Hour)),
 	})
 
-	t.Run("after load from file", func(t *testing.T) {
-		seed()
+	saveCaches()
 
-		file := t.TempDir() + "/" + HOTCACHE_FILE
-		if err := scheduleHotCache.SaveToFile(file); err != nil {
-			t.Fatal(err)
-		}
+	// load the files back the same way New() does
+	resetCaches()
 
-		resetCaches()
-		if err := scheduleHotCache.LoadFromFile(file); err != nil {
-			t.Fatal(err)
-		}
-
-		check(t, PruneScheduleHotCache(now), 2)
-	})
-}
-
-func BenchmarkParseSchedulerEvents(b *testing.B) {
-	items := make([]string, 0, 100)
-	for i := range 100 {
-		if i%10 == 0 {
-			items = append(items, apgEventJSON("BUS1", "SRC1", "MAIN", "2026/08/16 13:00:00", "2026/08/16 14:00:00"))
-			continue
-		}
-		items = append(items, `{"task":"router","output":"X","input":"Y","state":"running","history":{"a":[1,2,3]},"tags":["MAIN"]}`)
+	if err := busCache.LoadFromFile(BUSCACHE_FILE); err != nil {
+		t.Fatal(err)
 	}
 
-	payload := []byte("[" + strings.Join(items, ",") + "]")
-	if !json.Valid(payload) {
-		b.Fatal("invalid benchmark payload")
+	if bs, ok := busCache.Get("BUS1"); !ok || bs.State != Backup || bs.Source != "SRC2" {
+		t.Errorf("bus cache = %+v %t", bs, ok)
 	}
 
-	b.ResetTimer()
+	if err := scheduleStore.LoadFromFile(SCHEDULE_FILE); err != nil {
+		t.Fatal(err)
+	}
 
-	for range b.N {
-		if _, err := parseSchedulerEvents(payload); err != nil {
-			b.Fatal(err)
-		}
+	// expired windows are pruned before saving
+	if r, _, ok := GetBusRouting("ACTIVE", true); !ok || r.Pri != "SRC1" || r.Sec != "SRC2" {
+		t.Errorf("ACTIVE = %+v %t", r, ok)
+	}
+
+	if scheduleStore.Length() != 1 {
+		t.Errorf("schedule store has %d outputs, want 1 (expired window saved)", scheduleStore.Length())
 	}
 }

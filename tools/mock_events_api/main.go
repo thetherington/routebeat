@@ -1,15 +1,20 @@
 // mock_events_api is a local stand-in for the scheduler events api used by the routebeat events_api client.
-// it answers GETs with a MAIN and BACKUP apg event for the requested output, active around the current time.
+// it answers GETs with a MAIN and BACKUP apg event per output, active around the requested time:
 //
-//	go run ./tools/mock_events_api -addr :8090 -primary DCXA006D
+//   - with ?output=<bus> (unscheduled recheck), events for that output active now
+//   - without output (schedule poll), events for every -outputs bus active at ?start= ("now" or "now+25m")
 //
-//	curl 'http://localhost:8090/events?output=BSITAL'
-//	curl 'http://localhost:8090/events/BSITAL'
+// a ?task= other than apg returns no events, the way the real api filters by task.
+//
+//	go run ./tools/mock_events_api -addr :8090 -primary DCXA006D -outputs BSITAL,BSTRJA
+//
+//	curl 'http://localhost:8090/events?output=BSITAL&task=apg'
+//	curl 'http://localhost:8090/events?start=now%2B25m&end=now%2B25m&task=apg'
 //
 // routebeat.yml:
 //
 //	events_api:
-//	  url: "http://localhost:8090/events/{output}"
+//	  url: "http://localhost:8090/events"
 package main
 
 import (
@@ -21,6 +26,7 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -71,18 +77,22 @@ func main() {
 	backup := flag.String("backup", "", "backup (BACKUP) source label, random per request when empty")
 	before := flag.Duration("before", 30*time.Minute, "event window starts this long before now")
 	after := flag.Duration("after", 30*time.Minute, "event window ends this long after now")
-	noise := flag.Bool("noise", false, "also return a non-apg event, to exercise the callback filtering")
+	outputs := flag.String("outputs", "BSITAL,BSTRJA", "comma separated buses returned by a request without an output")
+	noise := flag.Bool("noise", false, "also return a non-apg event when no task filter is sent, to exercise the client filtering")
 	flag.Parse()
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
-		output := r.PathValue("output")
-		if output == "" {
-			output = r.URL.Query().Get("output")
+		q := r.URL.Query()
+
+		at, err := relativeTime(q.Get("start"))
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
 		}
 
-		if output == "" {
-			http.Error(w, `{"error":"output is required"}`, http.StatusBadRequest)
-			return
+		buses := strings.Split(*outputs, ",")
+		if output := q.Get("output"); output != "" {
+			buses = []string{output}
 		}
 
 		sec := *backup
@@ -90,25 +100,27 @@ func main() {
 			sec = randomSource()
 		}
 
-		now := time.Now().UTC().Truncate(time.Second)
-		start, end := now.Add(-*before), now.Add(*after)
+		start, end := at.Add(-*before), at.Add(*after)
 
-		events := []event{
-			newEvent(output, *primary, sec, "MAIN", start, end),
-			newEvent(output, sec, *primary, "BACKUP", start, end),
+		payload := []any{}
+
+		task := q.Get("task")
+		if task == "" || task == "apg" {
+			for _, bus := range buses {
+				payload = append(payload,
+					newEvent(bus, *primary, sec, "MAIN", start, end),
+					newEvent(bus, sec, *primary, "BACKUP", start, end),
+				)
+			}
 		}
 
-		var payload []any
-		for _, e := range events {
-			payload = append(payload, e)
+		if *noise && task == "" {
+			payload = append(payload, map[string]any{"task": "route", "output": buses[0], "input": randomSource()})
 		}
 
-		if *noise {
-			payload = append(payload, map[string]any{"task": "route", "output": output, "input": randomSource()})
-		}
-
-		log.Printf("%s %s -> output=%s primary=%s backup=%s window=%s..%s",
-			r.Method, r.URL, output, *primary, sec, start.Format(schedulerDateLayout), end.Format(schedulerDateLayout))
+		log.Printf("%s %s -> outputs=%s primary=%s backup=%s window=%s..%s events=%d",
+			r.Method, r.URL, strings.Join(buses, ","), *primary, sec,
+			start.Format(schedulerDateLayout), end.Format(schedulerDateLayout), len(payload))
 
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(payload); err != nil {
@@ -118,10 +130,27 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /events", handler)
-	mux.HandleFunc("GET /events/{output}", handler)
 
 	log.Printf("mock events api listening on %s (primary %s)", *addr, *primary)
 	log.Fatal(http.ListenAndServe(*addr, mux))
+}
+
+// relativeTime resolves "", "now" or "now+<duration>" (e.g. now+25m) to a time
+func relativeTime(s string) (time.Time, error) {
+	now := time.Now().UTC().Truncate(time.Second)
+
+	switch {
+	case s == "" || s == "now":
+		return now, nil
+	case strings.HasPrefix(s, "now+"):
+		d, err := time.ParseDuration(strings.TrimPrefix(s, "now+"))
+		if err != nil {
+			return now, fmt.Errorf("invalid relative time %q", s)
+		}
+		return now.Add(d), nil
+	}
+
+	return now, fmt.Errorf("invalid relative time %q", s)
 }
 
 // newEvent builds an apg event shaped like the real scheduler payload (start/end as epoch-ns strings)
