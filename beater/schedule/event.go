@@ -21,27 +21,28 @@ type taskView struct {
 }
 
 // Event is an apg scheduler event as returned by the events api.
-// start and end are strings here, they're converted to numbers when ingested into elasticsearch
+// start and end are epoch nanoseconds. the events api sends them as numbers, the elasticsearch
+// snapshots store them as strings, json.Number accepts both
 type Event struct {
-	EndDate       string `json:"end_date"`
-	OutputType    string `json:"output_type"`
-	OutputID      string `json:"output_id"`
-	EventID       string `json:"event_id"`
-	Error         string `json:"error"`
-	History       []any  `json:"history"`
-	Start         string `json:"start"`
-	StartDate     string `json:"start_date"`
-	OutputPooled  bool   `json:"output_pooled"`
-	ScheduleID    string `json:"schedule_id"`
-	Entry         string `json:"entry"`
-	State         int    `json:"state"`
-	InputBlocking bool   `json:"input_blocking"`
-	InputPooled   bool   `json:"input_pooled"`
-	Task          string `json:"task"`
-	InputID       string `json:"input_id"`
-	EndOffset     string `json:"end_offset"`
-	InputType     string `json:"input_type"`
-	Input         string `json:"input"`
+	EndDate       string      `json:"end_date"`
+	OutputType    string      `json:"output_type"`
+	OutputID      string      `json:"output_id"`
+	EventID       string      `json:"event_id"`
+	Error         string      `json:"error"`
+	History       []any       `json:"history"`
+	Start         json.Number `json:"start"`
+	StartDate     string      `json:"start_date"`
+	OutputPooled  bool        `json:"output_pooled"`
+	ScheduleID    string      `json:"schedule_id"`
+	Entry         string      `json:"entry"`
+	State         int         `json:"state"`
+	InputBlocking bool        `json:"input_blocking"`
+	InputPooled   bool        `json:"input_pooled"`
+	Task          string      `json:"task"`
+	InputID       string      `json:"input_id"`
+	EndOffset     string      `json:"end_offset"`
+	InputType     string      `json:"input_type"`
+	Input         string      `json:"input"`
 	EventParams   struct {
 		ApgID    string `json:"apg_id"`
 		PriSrc   string `json:"pri_src"`
@@ -52,12 +53,12 @@ type Event struct {
 	} `json:"event_params"`
 	Recur struct {
 	} `json:"recur"`
-	OutputBlocking bool     `json:"output_blocking"`
-	Comment        string   `json:"comment"`
-	Tags           []string `json:"tags"`
-	End            string   `json:"end"`
-	StartOffset    string   `json:"start_offset"`
-	Output         string   `json:"output"`
+	OutputBlocking bool        `json:"output_blocking"`
+	Comment        string      `json:"comment"`
+	Tags           []string    `json:"tags"`
+	End            json.Number `json:"end"`
+	StartOffset    string      `json:"start_offset"`
+	Output         string      `json:"output"`
 }
 
 // Stats counts what happened to the items of a payload while parsing and building routings

@@ -194,6 +194,32 @@ func decodeOne(t *testing.T, payload json.RawMessage) Event {
 	return events[0]
 }
 
+// the events api sends start/end as numbers, the elasticsearch snapshots as strings
+func TestParseEventsEpochTypes(t *testing.T) {
+	const tmpl = `{"task":"apg","output":"BUS1","input":"SRC1","tags":["MAIN"],"start":%s,"end":%s,` +
+		`"start_date":"2026/11/16 05:00:00","end_date":"2026/11/17 05:00:00"}`
+
+	for name, payload := range map[string]string{
+		"numbers": fmt.Sprintf(tmpl, "1794805200000000000", "1794891600000000000"),
+		"strings": fmt.Sprintf(tmpl, `"1794805200000000000"`, `"1794891600000000000"`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			events, stats, err := ParseEvents([]byte(payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if len(events) != 1 || stats.Invalid != 0 {
+				t.Fatalf("events = %d stats = %+v, want 1 valid event", len(events), stats)
+			}
+
+			if events[0].Start.String() != "1794805200000000000" || events[0].End.String() != "1794891600000000000" {
+				t.Errorf("start = %s end = %s", events[0].Start, events[0].End)
+			}
+		})
+	}
+}
+
 func TestRealEventsDecode(t *testing.T) {
 	f := loadSchedulerFixture(t)
 
@@ -208,7 +234,7 @@ func TestRealEventsDecode(t *testing.T) {
 
 		e := decodeOne(t, payload)
 
-		if e.Task != "apg" || e.Output == "" || e.Input == "" || e.Start != raw.Start || !slices.Equal(e.Tags, raw.Tags) {
+		if e.Task != "apg" || e.Output == "" || e.Input == "" || e.Start.String() != raw.Start || !slices.Equal(e.Tags, raw.Tags) {
 			t.Errorf("decoded %s: %+v", payload[:80], e)
 		}
 	}

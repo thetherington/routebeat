@@ -43,7 +43,7 @@ type eventParams struct {
 
 type event struct {
 	Comment        string      `json:"comment"`
-	End            string      `json:"end"`
+	End            int64       `json:"end"`
 	EndDate        string      `json:"end_date"`
 	EndOffset      string      `json:"end_offset"`
 	Entry          string      `json:"entry"`
@@ -63,7 +63,7 @@ type event struct {
 	OutputType     string      `json:"output_type"`
 	Recur          struct{}    `json:"recur"`
 	ScheduleID     string      `json:"schedule_id"`
-	Start          string      `json:"start"`
+	Start          int64       `json:"start"`
 	StartDate      string      `json:"start_date"`
 	StartOffset    string      `json:"start_offset"`
 	State          int         `json:"state"`
@@ -153,12 +153,12 @@ func relativeTime(s string) (time.Time, error) {
 	return now, fmt.Errorf("invalid relative time %q", s)
 }
 
-// newEvent builds an apg event shaped like the real scheduler payload (start/end as epoch-ns strings)
+// newEvent builds an apg event shaped like the real scheduler payload (start/end as epoch-ns numbers)
 func newEvent(output, input, other, tag string, start, end time.Time) event {
-	startNs := strconv.FormatInt(start.UnixNano(), 10)
+	startNs := start.UnixNano()
 
 	return event{
-		End:       strconv.FormatInt(end.UnixNano(), 10),
+		End:       end.UnixNano(),
 		EndDate:   end.Format(schedulerDateLayout),
 		EndOffset: "0",
 		Entry:     "manual",
@@ -179,7 +179,7 @@ func newEvent(output, input, other, tag string, start, end time.Time) event {
 		OutputBlocking: true,
 		OutputID:       uuid(),
 		OutputType:     "magnum",
-		ScheduleID:     randomDigits(8) + "&" + startNs,
+		ScheduleID:     randomDigits(8) + "&" + strconv.FormatInt(startNs, 10),
 		Start:          startNs,
 		StartDate:      start.Format(schedulerDateLayout),
 		StartOffset:    "0",
