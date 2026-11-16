@@ -6,12 +6,12 @@ Not run by the tests. Re-run to refresh the fixtures:
     python3 -I beater/testdata/fetch_fixtures.py [http://10.9.0.69:9200]
 
 Writes next to this script:
-    scheduler_events.json       scheduler webhook payloads (from log-magnum-scheduler-*)
+    scheduler_events.json       scheduler events in the events api shape (from log-magnum-scheduler-*)
     routebeat_events.json       routebeat documents for the status replay test
     notification_sequence.json  ordered routebeat notifications per bus
 
-The scheduler index stores start/end as epoch-ns numbers (converted at ingest),
-the webhook and events api send them as strings, so they are converted back here.
+The events api sends start/end as epoch-ns numbers. They're normalized to integers here
+in case the index holds them as strings or floats.
 """
 
 import json
@@ -53,13 +53,17 @@ def hits(index, query, size=1, sort="desc", source=None):
     return [h["_source"] for h in search(index, body)["hits"]["hits"]]
 
 
-def webhook_payload(event):
-    """scheduler.event as the webhook sends it: start/end as strings, no ingest-only fields"""
-    event = dict(event)
-    for key in ("start", "end"):
-        if isinstance(event.get(key), (int, float)):
-            event[key] = str(int(event[key]))
-    return event
+def epoch_ns(obj):
+    """start/end as integer epoch-ns, as the events api sends them"""
+    for key in ("start", "end", "creation_time"):
+        if isinstance(obj.get(key), (str, float)) and str(obj[key]).strip():
+            obj[key] = int(obj[key])
+    return obj
+
+
+def api_event(event):
+    """scheduler.event as the events api returns it"""
+    return epoch_ns(dict(event))
 
 
 def term(field, value):
@@ -94,7 +98,7 @@ def scheduler_fixture():
             term("scheduler.event.start", b["start"]),
         ), source=["scheduler.event"])
         if mains:
-            pair = [webhook_payload(mains[0]["scheduler"]["event"]), webhook_payload(b)]
+            pair = [api_event(mains[0]["scheduler"]["event"]), api_event(b)]
             break
 
     if pair is None:
@@ -105,24 +109,20 @@ def scheduler_fixture():
                  ["BACKUP", "EXTERNAL", "PxP"], ["BACKUP", "EXTERNAL"]):
         found = hits(SCHEDULER, tags_exactly(tags), source=["scheduler.event"])
         if found:
-            combos.append(webhook_payload(found[0]["scheduler"]["event"]))
+            combos.append(api_event(found[0]["scheduler"]["event"]))
 
     non_apg = []
     for task in ("silence", "xmuds", "route"):
         found = hits(SCHEDULER, term("scheduler.event.task", task), source=["scheduler.event"])
         if found:
-            non_apg.append(webhook_payload(found[0]["scheduler"]["event"]))
+            non_apg.append(api_event(found[0]["scheduler"]["event"]))
 
     # schedule documents have no task, but nest apg events
     schedule = hits(SCHEDULER, bool_filter(must_not=[{"exists": {"field": "scheduler.event.task"}}]),
                     source=["scheduler.schedule"])[0]["scheduler"]["schedule"]
     for ev in schedule.get("events", []):
-        for key in ("start", "end"):
-            if isinstance(ev.get(key), (int, float)):
-                ev[key] = str(int(ev[key]))
-    for key in ("start", "end"):
-        if isinstance(schedule.get(key), (int, float)):
-            schedule[key] = str(int(schedule[key]))
+        epoch_ns(ev)
+    epoch_ns(schedule)
 
     return {
         "source": f"{ES}/{SCHEDULER}",

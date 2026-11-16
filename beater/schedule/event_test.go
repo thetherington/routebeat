@@ -225,8 +225,8 @@ func TestRealEventsDecode(t *testing.T) {
 
 	for _, payload := range slices.Concat(f.ApgPair, f.ApgTagCombos) {
 		var raw struct {
-			Tags  []string `json:"tags"`
-			Start string   `json:"start"`
+			Tags  []string    `json:"tags"`
+			Start json.Number `json:"start"`
 		}
 		if err := json.Unmarshal(payload, &raw); err != nil {
 			t.Fatal(err)
@@ -234,7 +234,7 @@ func TestRealEventsDecode(t *testing.T) {
 
 		e := decodeOne(t, payload)
 
-		if e.Task != "apg" || e.Output == "" || e.Input == "" || e.Start.String() != raw.Start || !slices.Equal(e.Tags, raw.Tags) {
+		if e.Task != "apg" || e.Output == "" || e.Input == "" || e.Start != raw.Start || !slices.Equal(e.Tags, raw.Tags) {
 			t.Errorf("decoded %s: %+v", payload[:80], e)
 		}
 	}

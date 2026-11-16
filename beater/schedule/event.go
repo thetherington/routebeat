@@ -21,8 +21,8 @@ type taskView struct {
 }
 
 // Event is an apg scheduler event as returned by the events api.
-// start and end are epoch nanoseconds. the events api sends them as numbers, the elasticsearch
-// snapshots store them as strings, json.Number accepts both
+// start and end are epoch nanoseconds. the events api sends them as numbers, json.Number also
+// accepts them as quoted strings
 type Event struct {
 	EndDate       string      `json:"end_date"`
 	OutputType    string      `json:"output_type"`
