@@ -101,15 +101,17 @@ func withDefault[T comparable](v, def T) T {
 	return v
 }
 
-// RefreshOutput fetches the scheduler events for one output
-func (c *Client) RefreshOutput(ctx context.Context, output string) ([]schedule.Event, schedule.Stats, error) {
-	return c.events(ctx, url.Values{c.outputParam: {output}}, c.timeout)
-}
-
 // EventsAt fetches the scheduler events for every output that are active at a point in time.
-// at is passed through to the api as-is, e.g. "now" or "now+25m"
+// at is passed through to the api as-is, e.g. "now" or "now+25m". uses the bulk timeout
 func (c *Client) EventsAt(ctx context.Context, at string) ([]schedule.Event, schedule.Stats, error) {
 	return c.events(ctx, url.Values{c.startParam: {at}, c.endParam: {at}}, c.bulkTimeout)
+}
+
+// OutputEventsAt fetches the scheduler events for one output that are active at a point in time,
+// the same request as EventsAt scoped to the output. a start and end are always sent: without them
+// the api returns every event it holds for the output (the previous day and the next 6 days)
+func (c *Client) OutputEventsAt(ctx context.Context, output, at string) ([]schedule.Event, schedule.Stats, error) {
+	return c.events(ctx, url.Values{c.outputParam: {output}, c.startParam: {at}, c.endParam: {at}}, c.timeout)
 }
 
 // RequestURL builds the request url: the base url with the params and the task filter added

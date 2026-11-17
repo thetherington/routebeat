@@ -233,7 +233,9 @@ Fields routebeat uses:
 | `input` | the scheduled source label | the **primary** when tagged `MAIN`, the **backup** when tagged `BACKUP` |
 | `tags` | role of the event | must include `MAIN` or `BACKUP`. Other tags (`EXTERNAL`, `PxP`, ...) can appear alongside them and are ignored |
 | `start_date` / `end_date` | the scheduled window, **UTC**, format `YYYY/MM/DD HH:MM:SS` | the event is only used while it's active |
-| `start` / `end` | the same window as epoch nanoseconds | not used. They're strings in the events API payloads |
+| `start` / `end` | the same window as epoch nanoseconds (JSON numbers) | not used |
+| `state` | event state | `7` is a deleted event and is ignored. The API can still return deleted events, often overlapping the event that replaced them |
+| `event_params` | scheduler parameters (`pri_src`, `sec_src`, ...) | never used; the sources come only from `input` |
 
 ### Schedule store (events API)
 
@@ -260,9 +262,9 @@ flowchart LR
 
 The poll replaces the whole store, so buses that are no longer scheduled are dropped. If the **now** request fails, the store is left as it was; it's never emptied by a failed poll. If only the lookahead request fails, the current windows are still loaded.
 
-When routebeat looks up a bus, it uses the window that's **active right now**, so the store moves to the next program at the top of the hour without waiting for the next poll. With `schedule.dev.validate_end_date: false`, the first stored window is used whatever its dates (for development only). Expired windows are removed every 10 minutes.
+When routebeat looks up a bus, it uses the window that's **active right now**, so the store moves to the next program at the top of the hour without waiting for the next poll. If more than one window is active, for example a shorter event scheduled inside a longer one, the window whose start is **closest to now** (the latest start) wins, and windows with the same start resolve to the shorter one. The longer event takes over again when the shorter one ends. With `schedule.dev.validate_end_date: false`, the first stored window is used whatever its dates (for development only). Expired windows are removed every 10 minutes.
 
-The [unscheduled recheck](#unscheduled-recheck) also writes to the store. It merges the refreshed windows for a bus: a window with the same or an overlapping time replaces the stored one, but a `BACKUP`-only update keeps the stored primary, and the other way round. A bus refreshed while a poll is running keeps its refreshed windows, so a poll that started earlier can't overwrite newer data.
+The [unscheduled recheck](#unscheduled-recheck) also writes to the store. The refresh returns every event for one bus, so it's handled like the poll, scoped to that bus: the windows are built the same way (`MAIN`/`BACKUP` folded, deleted events skipped) and replace the bus's stored windows. Nothing from the polled windows is carried over, so a `MAIN`-only response leaves the bus with no backup. If the response has no current or upcoming window for the bus, the polled windows are kept. A bus refreshed while a poll is running keeps its refreshed windows, so a poll that started earlier can't overwrite newer data.
 
 The event's `schedule.routingSource` says how the schedule routing was found:
 
@@ -374,9 +376,11 @@ sequenceDiagram
     opt events_api.delay set
         RB->>RB: pause events_api.delay (let the api receive new data)
     end
-    RB->>API: GET ?output=BSITAL&task=apg
+    RB->>API: GET ?output=BSITAL&start=now&end=now&task=apg
     API-->>RB: [apg MAIN DCZA009D, apg BACKUP ...]
-    RB->>ST: merge the windows that haven't ended
+    RB->>API: GET ?output=BSITAL&start=now+25m&end=now+25m&task=apg
+    API-->>RB: [upcoming apg events]
+    RB->>ST: replace BSITAL's windows (if any haven't ended)
     RB->>ST: does DCZA009D match the active window?
     alt match
         ST-->>RB: yes → Primary / Backup (routingSource = recheck)
@@ -387,10 +391,12 @@ sequenceDiagram
 
 - If the events API is slow to receive new scheduler data, set `events_api.delay`. Routebeat then pauses that long before calling the API, so the request is more likely to include the change that just happened.
 - If the API is down or returns an error, the store isn't changed and the source is checked against the polled window, which normally means `UnscheduledAudio` is accepted.
-- The response can carry events for other buses too. They're merged into the store as well.
+- The refresh replaces the bus's windows only when the response has a current or upcoming window for it. An empty response keeps the polled windows.
+- Events for other buses in the response are ignored; the poll keeps those current.
 - When there's no match, the event reports the routing the status was decided against, even if the refresh stored a newer window.
 - The recheck never runs for queries, for buses seen for the first time, or for buses already unscheduled.
-- A recheck delays the destinations after it in the same batch by up to `events_api.delay` plus `events_api.timeout`.
+- The recheck sends the same two requests as the poll (now, then now + `schedule.lookahead`), filtered to the bus with `output`. A start and end are always sent: without them the API returns every event it holds for the bus (the previous day and the next 6 days). If the now request fails, the lookahead request isn't sent and the store isn't changed. If only the lookahead request fails, the current window is still applied.
+- A recheck delays the destinations after it in the same batch by up to `events_api.delay` plus twice `events_api.timeout` (two requests).
 
 ### Transitions and deviation times
 
@@ -730,7 +736,7 @@ routebeat:
 | `events_api.start_param` / `end_param` | `start` / `end` | query parameter names for the poll's point in time |
 | `events_api.output_param` | `output` | query parameter name for the bus code in a recheck |
 | `events_api.task_param` / `task` | `task` / `apg` | task filter sent with every request; an empty `task` sends no filter |
-| `events_api.timeout` | `3s` | recheck request timeout |
+| `events_api.timeout` | `3s` | timeout for each of the two recheck requests |
 | `events_api.bulk_timeout` | `15s` | poll request timeout (each poll response holds every bus) |
 | `events_api.delay` | `0s` | pause before each recheck request, in case the API is slow to receive new scheduler data; `0s` calls the API immediately |
 | `events_api.headers` | | extra request headers, for example authorization |
@@ -752,7 +758,8 @@ Every request is a `GET` with an `Accept: application/json` header and any confi
 |---|---|---|
 | poll, now | every `schedule.period` | `GET <url>?end=now&start=now&task=apg` |
 | poll, lookahead | right after the first poll request | `GET <url>?end=now%2B25m&start=now%2B25m&task=apg` |
-| recheck | a bus has just gone unscheduled | `GET <url>?output=BSITAL&task=apg` |
+| recheck, now | a bus has just gone unscheduled | `GET <url>?end=now&output=BSITAL&start=now&task=apg` |
+| recheck, lookahead | right after the first recheck request | `GET <url>?end=now%2B25m&output=BSITAL&start=now%2B25m&task=apg` |
 
 Every 5 minutes, routebeat logs counts of the events received, skipped and stored under the `ScheduleEvents` [debug selector](#debug-logging).
 
@@ -808,7 +815,7 @@ logging.selectors: ["ProcessResults.*", "ScheduleCache", "ScheduleRecheck"]
 | `ScheduleRecheck` | An unscheduled recheck refreshed the bus and found a routing that matches the source. It uses the same fixed `Key:value` format as `ScheduleRecheckMiss`, with `State` in place of `Reason`:<br>`Recheck hit Destination:<bus> Source:<source label> State:<Primary\|Backup> Primary:<primary> Backup:<backup>` | confirm that the events API refresh rescued a bus from `UnscheduledAudio` |
 | `ScheduleRecheckMiss` | Each unscheduled recheck that doesn't find a match, in a fixed `Key:value` format:<br>`Recheck miss Destination:<bus> Source:<source label> Reason:<no_active_routing\|source_not_scheduled> Primary:<primary> Backup:<backup>`<br>`no_active_routing` means the store has no active window for the bus after the refresh, and Primary and Backup are blank. `source_not_scheduled` means an active window exists but the source is neither its primary nor its backup. | find buses the recheck couldn't rescue, and collect the destination and source pairs, for example to check later what the events API should have returned |
 | `QueryScheduler` | After each schedule poll: the number of events returned for now and for the lookahead, the number of buses stored, and how many buses were kept because a recheck refreshed them during the poll | check that the poll is running and returning the expected number of buses |
-| `ScheduleEvents` | Every 5 minutes, counters for the previous 5 minutes of poll and recheck responses: `events` (`apg` events decoded), `non-apg` (dropped as another task or shape), `invalid` (bad JSON or dates), `apg-no-tag` (no `MAIN`/`BACKUP` tag), `routings` (windows built) | check what the events API is returning, and why events are or aren't reaching the schedule |
+| `ScheduleEvents` | Every 5 minutes, counters for the previous 5 minutes of poll and recheck responses: `events` (`apg` events decoded), `non-apg` (dropped as another task or shape), `invalid` (bad JSON or dates), `deleted` (`state: 7` deleted events, skipped), `apg-no-tag` (no `MAIN`/`BACKUP` tag), `routings` (windows built) | check what the events API is returning, and why events are or aren't reaching the schedule |
 | `PruneSchedule` | Every 10 minutes, the number of expired windows and empty buses removed from the schedule store | confirm that old windows are dropped |
 
 Libbeat matches selectors exactly; the only wildcard it understands is `*`. Routebeat adds its own handling for the `ProcessResults` group:

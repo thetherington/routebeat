@@ -170,11 +170,13 @@ This replaces an older behaviour in which a blank source matched a blank schedul
 
 | Case | Setup | Result |
 |---|---|---|
-| events API success with no transition | bus on Primary; the API returns `MAIN SRC_NEW` | `Primary` from `recheck`, with the polled backup kept (`SRC2`); no alerts |
-| events API success as backup is a transition | the API returns `BACKUP SRC_NEW` | `Backup` from `recheck`, with the polled primary kept (`SRC1`); Primary → Backup Error alerts |
-| events API success with a correction | bus on Backup; the API returns `MAIN SRC_NEW` | `Primary` from `recheck`; Correction alerts with the first departure and an end time; 1 API call |
+| events API success with no transition | bus on Primary; the API returns `MAIN SRC_NEW` | `Primary` from `recheck`; the refresh replaces the polled window, so there's no backup; no alerts |
+| events API success as backup is a transition | the API returns `BACKUP SRC_NEW` | `Backup` from `recheck`, with no primary (the polled `SRC1` isn't kept); Primary → Backup Error alerts |
+| events API success with a correction | bus on Backup; the API returns `MAIN SRC_NEW` | `Primary` from `recheck`; Correction alerts with the first departure and an end time; 2 API calls |
+| events API success with a main and backup pair | the API returns `MAIN NEW_PRI` and `BACKUP SRC_NEW` | `Backup` from `recheck` with both sources from the refresh; Primary → Backup Error alerts |
+| events API returns only other outputs | the response has no events for the bus | `UnscheduledAudio` from `cache`; the polled window is kept |
 | no events API | no client configured | `UnscheduledAudio` from `cache`; the store is unchanged |
-| events API error | API returns 500 | `UnscheduledAudio` from `cache`; 1 API call; the store is unchanged |
+| events API error | API returns 500 | `UnscheduledAudio` from `cache`; 1 API call (no lookahead request); the store is unchanged |
 | events API returns a different source | API returns `MAIN OTHER_SRC` | `UnscheduledAudio`; the event reports the polled routing it was decided against |
 | events API returns an inactive window | API returns `MAIN SRC_NEW` with an expired window | `UnscheduledAudio`; the window isn't stored |
 | events API returns untagged and non-apg events | events with no `MAIN`/`BACKUP` tag and other tasks | `UnscheduledAudio`; the store is unchanged |
@@ -184,8 +186,8 @@ This replaces an older behaviour in which a blank source matched a blank schedul
 | Case | Result |
 |---|---|
 | no events API | accepts unscheduled immediately, keeping the original routing and source |
-| API match | 1 call; `Primary` from `recheck` with the refreshed routing |
-| API failure | 1 call; accepts unscheduled with the original routing and source |
+| API match | 2 calls (now and lookahead); `Primary` from `recheck` with the refreshed routing |
+| API failure | 1 call (no lookahead request after the failed now request); accepts unscheduled with the original routing and source |
 | events API delay pauses before the request | the stub API only gets the new event halfway through `events_api.delay`; the request is sent after the delay, so the new event is found and the bus is `Primary` from `recheck` |
 
 **`TestRecheckRouteLogs`** captures the `ScheduleRecheck` (hit) and `ScheduleRecheckMiss` debug output and checks the exact log line. Every line includes the destination, the source, the reason or state, and the primary and backup of the active window:
@@ -199,11 +201,12 @@ This replaces an older behaviour in which a blank source matched a blank schedul
 
 **`TestIsUnscheduledTransition`** checks when a recheck is triggered: only for a notification that moves a known bus into `UnscheduledAudio`. It isn't triggered for queries, for a bus with no earlier state, or for a bus that was already unscheduled.
 
-**`TestRefreshOutput`** checks the refresh request (`output=BUS1&task=apg`) and that a response for one bus can carry events for other buses, all merged into the store:
-- `BUS1` gets its primary and backup, even though the two events aren't next to each other in the list.
-- `BUS2` gets a new primary and keeps the backup it already had, because the windows overlap.
-- `BUS3` gets a backup only.
-- a failing API returns an error.
+**`TestRefreshOutput`** checks that the recheck runs the poll for one bus: two requests, `output=BUS1&start=now&end=now&task=apg` then the same with `now+25m`, and that only the requested bus is replaced:
+- `BUS1`'s polled window is replaced by the current window (primary and backup, even though the two events aren't next to each other in the list) and the upcoming window; an event in both responses is stored once.
+- events for `BUS2` and `BUS3` in the same response are ignored: `BUS2` keeps its stored window and `BUS3` isn't added.
+- a failed lookahead request still applies the current window.
+- a failed now request returns an error, skips the lookahead request and keeps the polled window.
+- responses with no events for the bus keep the polled window.
 
 ## Self-correction (defunct state)
 
@@ -271,7 +274,8 @@ The `beater/schedule` package holds the event model, the routing windows and the
 |---|---|
 | `TestStoreActive` | the window active now is returned; the upcoming window becomes active when the current one ends; an expired window isn't returned unless end dates aren't validated |
 | `TestStoreReplace` | a poll replaces every bus, removes buses missing from it, and keeps a bus refreshed after the poll began |
-| `TestStoreUpsert` | an identical window keeps the other source; an advanced (overlapping) window merges over the stored one; a separate window is inserted in order; a new bus is added; expired, dateless and nil windows aren't applied; a routing a reader already holds is never changed in place |
+| `TestStoreActiveOverlap` | overlapping windows resolve to the one whose start is closest to now (a shorter event inside a longer one wins, and the longer one resumes after it); the same start resolves to the shorter window; back-to-back windows hand over at the boundary |
+| `TestStoreReplaceOutput` | a refresh replaces only that bus's windows (nothing from the old windows is kept); overlapping events stay separate; a new bus is added; a later poll keeps the refresh; a refresh with no current window keeps the stored entry and doesn't create one; the caller's windows are copied and a routing a reader already holds is never changed in place |
 | `TestStorePrune` | expired windows and buses left empty are removed, both in memory and after a save and load |
 | `TestStoreConcurrentAccess` | polls, refreshes, pruning and lookups at the same time, under the race detector |
 
@@ -304,7 +308,7 @@ python3 -I beater/testdata/fetch_fixtures.py http://<elasticsearch>:9200
 
 | Package | Tests | What they check |
 |---|---|---|
-| `beater/eventsapi` | `TestNewValidation`, `TestRequestURL`, `TestEventsAt`, `TestRefreshOutput`, `TestEventsErrors` | the URL is required, needs a scheme and host, and can't use `{output}`; the parameter names default to `start`/`end`/`output`/`task`; the poll and refresh requests carry the right parameters (configurable names, `now+25m` sent as `now%2B25m`, the task filter, existing URL parameters kept) and the configured headers; the response is parsed into `apg` events; a non-2xx response, a malformed body or a timeout is an error; the refresh uses `timeout` and the poll uses `bulk_timeout` |
+| `beater/eventsapi` | `TestNewValidation`, `TestRequestURL`, `TestEventsAt`, `TestOutputEventsAt`, `TestEventsErrors` | the URL is required, needs a scheme and host, and can't use `{output}`; the parameter names default to `start`/`end`/`output`/`task`; the poll and refresh requests carry the right parameters (configurable names, `now+25m` sent as `now%2B25m`, the task filter, existing URL parameters kept) and the configured headers; the response is parsed into `apg` events; a non-2xx response, a malformed body or a timeout is an error; the per-output recheck requests always send a start and end and use `timeout`, and the poll uses `bulk_timeout` |
 | `beater` (logging) | `TestBuildEventsProcessResultsLogs`, `TestEventDestination` | a notification batch's summary log lists its destinations by mapping label (matched and unmatched, not discarded); a query batch's summary has no destinations; without a label the Magnum destination name is used |
 | `beater` (logging) | `TestProcessResultsSelector` | the `ProcessResults.Query` and `ProcessResults.Notifications` sub selectors each enable only their event type; `ProcessResults.*` and `ProcessResults` enable both; `*` logs each under its own sub selector; unrelated selectors log nothing |
 | `config` | config tests | defaults and parsing of the `schedule` and `events_api` options (including `events_api.delay`, default `0s`, and an empty `task`), and that old `elasticsearch` and `webhook` blocks don't break parsing |

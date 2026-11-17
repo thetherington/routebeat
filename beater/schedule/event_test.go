@@ -19,6 +19,7 @@ func apgEventJSON(output, input, tag, start, end string) string {
 
 func TestParseEvents(t *testing.T) {
 	apg := apgEventJSON("TLUPDT", "SRC1", "MAIN", "2026/08/16 13:00:00", "2026/08/16 14:00:00")
+	deleted := strings.Replace(apg, `"state":1`, `"state":7`, 1)
 
 	tests := []struct {
 		name        string
@@ -27,7 +28,10 @@ func TestParseEvents(t *testing.T) {
 		wantEvents  int
 		wantNonApg  int
 		wantInvalid int
+		wantDeleted int
 	}{
+		{name: "deleted event is skipped", payload: deleted, wantDeleted: 1},
+		{name: "deleted event in an array", payload: "[" + deleted + "," + apg + "]", wantEvents: 1, wantDeleted: 1},
 		{name: "single object", payload: apg, wantEvents: 1},
 		{name: "array", payload: "[" + apg + "," + apg + "]", wantEvents: 2},
 		{name: "leading whitespace", payload: "\n\t " + apg, wantEvents: 1},
@@ -75,6 +79,10 @@ func TestParseEvents(t *testing.T) {
 
 			if stats.Invalid != tt.wantInvalid {
 				t.Errorf("invalid = %d, want %d", stats.Invalid, tt.wantInvalid)
+			}
+
+			if stats.Deleted != tt.wantDeleted {
+				t.Errorf("deleted = %d, want %d", stats.Deleted, tt.wantDeleted)
 			}
 		})
 	}

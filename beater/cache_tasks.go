@@ -16,6 +16,7 @@ var scheduleEventCounters struct {
 	events   int64
 	nonApg   int64
 	invalid  int64
+	deleted  int64
 	noTag    int64
 	routings int64
 }
@@ -25,6 +26,7 @@ func addScheduleEventStats(s schedule.Stats) {
 	atomic.AddInt64(&scheduleEventCounters.events, int64(s.Events))
 	atomic.AddInt64(&scheduleEventCounters.nonApg, int64(s.NonApg))
 	atomic.AddInt64(&scheduleEventCounters.invalid, int64(s.Invalid))
+	atomic.AddInt64(&scheduleEventCounters.deleted, int64(s.Deleted))
 	atomic.AddInt64(&scheduleEventCounters.noTag, int64(s.NoTag))
 	atomic.AddInt64(&scheduleEventCounters.routings, int64(s.Routings))
 }
@@ -41,10 +43,11 @@ func logScheduleEventCounters(done <-chan struct{}) {
 		case <-ticker.C:
 			logp.Debug(
 				"ScheduleEvents",
-				"events=%d non-apg=%d invalid=%d apg-no-tag=%d routings=%d",
+				"events=%d non-apg=%d invalid=%d deleted=%d apg-no-tag=%d routings=%d",
 				atomic.SwapInt64(&scheduleEventCounters.events, 0),
 				atomic.SwapInt64(&scheduleEventCounters.nonApg, 0),
 				atomic.SwapInt64(&scheduleEventCounters.invalid, 0),
+				atomic.SwapInt64(&scheduleEventCounters.deleted, 0),
 				atomic.SwapInt64(&scheduleEventCounters.noTag, 0),
 				atomic.SwapInt64(&scheduleEventCounters.routings, 0),
 			)
@@ -66,9 +69,21 @@ func relativeTime(d time.Duration) string {
 	}
 }
 
-// fetchScheduleAt fetches every event active at the relative time and builds the routing windows
-func fetchScheduleAt(api *eventsapi.Client, at string) (map[string][]*schedule.BusRouting, schedule.Stats, error) {
-	events, stats, err := api.EventsAt(context.Background(), at)
+// eventsAt fetches the events active at a relative time ("now", "now+25m")
+type eventsAt func(ctx context.Context, at string) ([]schedule.Event, schedule.Stats, error)
+
+// scheduleFetch is the result of fetching the events active now and at now+lookahead
+type scheduleFetch struct {
+	routes      map[string][]*schedule.BusRouting // merged now and lookahead windows
+	ahead       string                            // the lookahead relative time, e.g. "now+25m"
+	nowEvents   int
+	aheadEvents int
+	aheadErr    error // the lookahead fetch failed, routes only hold the now windows
+}
+
+// fetchScheduleAt fetches the events active at the relative time and builds the routing windows
+func fetchScheduleAt(fetch eventsAt, at string) (map[string][]*schedule.BusRouting, schedule.Stats, error) {
+	events, stats, err := fetch(context.Background(), at)
 	if err != nil {
 		return nil, stats, err
 	}
@@ -79,31 +94,50 @@ func fetchScheduleAt(api *eventsapi.Client, at string) (map[string][]*schedule.B
 	return routes, stats, nil
 }
 
+// fetchSchedule fetches the events active now, then at now+lookahead, and merges the routing
+// windows. used by the poll (every output) and the recheck (one output) so both build the schedule
+// the same way. returns an error only when the "now" fetch fails, the lookahead request is then
+// not sent. a failed lookahead fetch is returned in aheadErr with the now windows still built
+func fetchSchedule(fetch eventsAt, lookahead time.Duration) (scheduleFetch, error) {
+	res := scheduleFetch{ahead: relativeTime(lookahead)}
+
+	current, nowStats, err := fetchScheduleAt(fetch, "now")
+	addScheduleEventStats(nowStats)
+
+	if err != nil {
+		return res, err
+	}
+
+	upcoming, aheadStats, err := fetchScheduleAt(fetch, res.ahead)
+	addScheduleEventStats(aheadStats)
+
+	res.routes = schedule.MergeRouteLists(current, upcoming)
+	res.nowEvents = nowStats.Events
+	res.aheadEvents = aheadStats.Events
+	res.aheadErr = err
+
+	return res, nil
+}
+
 // pollSchedule fetches the events active now and at now+lookahead and replaces the schedule store.
 // the store is left as-is when the "now" fetch fails, so a failed poll never empties the schedule
 func pollSchedule(api *eventsapi.Client, lookahead time.Duration) {
 	fetchStart := time.Now()
-	ahead := relativeTime(lookahead)
 
-	current, nowStats, err := fetchScheduleAt(api, "now")
-	addScheduleEventStats(nowStats)
-
+	res, err := fetchSchedule(api.EventsAt, lookahead)
 	if err != nil {
 		logp.Err("schedule poll failed at=now: %v, keeping previous schedule", err)
 		return
 	}
 
-	upcoming, aheadStats, err := fetchScheduleAt(api, ahead)
-	addScheduleEventStats(aheadStats)
-
-	if err != nil {
-		logp.Err("schedule poll failed at=%s: %v", ahead, err)
+	if res.aheadErr != nil {
+		logp.Err("schedule poll failed at=%s: %v", res.ahead, res.aheadErr)
 	}
 
-	kept := scheduleStore.Replace(schedule.MergeRouteLists(current, upcoming), fetchStart)
+	kept := scheduleStore.Replace(res.routes, fetchStart)
 
 	logp.Debug("QueryScheduler", "schedule poll now=%d %s=%d events, outputs=%d kept=%d",
-		nowStats.Events, ahead, aheadStats.Events, scheduleStore.Length(), kept)
+		res.nowEvents, res.ahead, res.aheadEvents, scheduleStore.Length(), kept)
 }
 
 // ScheduleQueryGoRoutine polls the events api every period to rebuild the schedule store
@@ -123,25 +157,26 @@ func ScheduleQueryGoRoutine(api *eventsapi.Client, period, lookahead time.Durati
 	}
 }
 
-// refreshOutput fetches the events for an output from the events api and merges the routing windows
-// into the schedule store. the response may carry events for other outputs, they're merged too
-func (bt *routebeat) refreshOutput(output string) error {
-	events, stats, err := bt.eventsAPI.RefreshOutput(context.Background(), output)
-	addScheduleEventStats(stats)
+// refreshOutput runs the poll for one output: the events active now and at now+lookahead, with the
+// output filter, replace the output's routing windows in the schedule store. events for other
+// outputs in the responses are ignored, the poll keeps those current. returns whether the store was
+// updated: a failed "now" fetch, or no current or upcoming window for the output, keeps the polled
+// windows. a failed lookahead fetch is logged and the now windows are still applied, as in the poll
+func (bt *routebeat) refreshOutput(output string) (bool, error) {
+	fetch := func(ctx context.Context, at string) ([]schedule.Event, schedule.Stats, error) {
+		return bt.eventsAPI.OutputEventsAt(ctx, output, at)
+	}
 
+	res, err := fetchSchedule(fetch, bt.config.Schedule.Lookahead)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	routes, buildStats := schedule.BuildRoutes(events)
-	addScheduleEventStats(buildStats)
-
-	now := time.Now()
-	for out, windows := range routes {
-		scheduleStore.Upsert(out, windows, now)
+	if res.aheadErr != nil {
+		logp.Warn("events api refresh failed for Destination:%s at=%s: %v", output, res.ahead, res.aheadErr)
 	}
 
-	return nil
+	return scheduleStore.ReplaceOutput(output, res.routes[output], time.Now()), nil
 }
 
 // run in the background to save the busCache and the schedule store to file

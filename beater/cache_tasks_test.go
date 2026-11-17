@@ -13,6 +13,7 @@ import (
 
 	"github.com/thetherington/routebeat/beater/eventsapi"
 	"github.com/thetherington/routebeat/beater/schedule"
+	routeCfg "github.com/thetherington/routebeat/config"
 )
 
 func resetCaches() {
@@ -24,6 +25,7 @@ func resetScheduleEventCounters() {
 	atomic.StoreInt64(&scheduleEventCounters.events, 0)
 	atomic.StoreInt64(&scheduleEventCounters.nonApg, 0)
 	atomic.StoreInt64(&scheduleEventCounters.invalid, 0)
+	atomic.StoreInt64(&scheduleEventCounters.deleted, 0)
 	atomic.StoreInt64(&scheduleEventCounters.noTag, 0)
 	atomic.StoreInt64(&scheduleEventCounters.routings, 0)
 }
@@ -219,7 +221,7 @@ func TestPollSchedule(t *testing.T) {
 		stub := &pollStub{bodies: map[string]string{"now": nowBody, "now+25m": aheadBody}}
 		stub.during = func(start string) {
 			if start == "now+25m" {
-				scheduleStore.Upsert("BUS1", []*schedule.BusRouting{
+				scheduleStore.ReplaceOutput("BUS1", []*schedule.BusRouting{
 					routing("REFRESHED", "", time.Now().Add(-time.Minute), time.Now().Add(time.Hour)),
 				}, time.Now())
 			}
@@ -241,58 +243,129 @@ func TestPollSchedule(t *testing.T) {
 }
 
 func TestRefreshOutput(t *testing.T) {
-	start, end := activeWindow()
-
-	var gotQuery url.Values
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.Query()
-		w.Write([]byte("[" +
-			apgEventJSON("BUS1", "A1", "MAIN", start, end) + "," +
-			apgEventJSON("BUS2", "B1", "MAIN", start, end) + "," +
-			apgEventJSON("BUS1", "A2", "BACKUP", start, end) + "," +
-			apgEventJSON("BUS3", "C2", "BACKUP", start, end) + "," +
-			`{"task":"router","output":"X"}` + "]"))
-	}))
-	defer srv.Close()
-
-	resetCaches()
-
-	// an existing BUS2 routing with an overlapping window keeps its backup
+	nowStart, nowEnd := activeWindow()
+	nextStart, nextEnd := window(time.Hour, 2*time.Hour)
 	now := time.Now().UTC()
-	setSchedule(map[string]*schedule.BusRouting{"BUS2": routing("", "OLD_SEC", now.Add(-time.Hour), now.Add(time.Hour))})
 
-	bt := &routebeat{eventsAPI: newTestEventsAPI(t, srv.URL)}
-	if err := bt.refreshOutput("BUS1"); err != nil {
-		t.Fatal(err)
-	}
+	nowBody := "[" +
+		apgEventJSON("BUS1", "A1", "MAIN", nowStart, nowEnd) + "," +
+		apgEventJSON("BUS2", "B1", "MAIN", nowStart, nowEnd) + "," +
+		apgEventJSON("BUS1", "A2", "BACKUP", nowStart, nowEnd) + "," +
+		apgEventJSON("BUS3", "C2", "BACKUP", nowStart, nowEnd) + "," +
+		`{"task":"router","output":"X"}` + "]"
 
-	if want := (url.Values{"output": {"BUS1"}, "task": {"apg"}}); gotQuery.Encode() != want.Encode() {
-		t.Errorf("query = %v, want %v", gotQuery, want)
-	}
+	aheadBody := "[" +
+		apgEventJSON("BUS1", "A1", "MAIN", nowStart, nowEnd) + "," + // still active at the lookahead
+		apgEventJSON("BUS1", "NEXT_PRI", "MAIN", nextStart, nextEnd) + "," +
+		apgEventJSON("BUS1", "NEXT_SEC", "BACKUP", nextStart, nextEnd) + "]"
 
-	// a response for one output can carry events for other outputs, all of them are merged
-	want := map[string]struct{ pri, sec string }{
-		"BUS1": {"A1", "A2"},      // requested output, MAIN and BACKUP are not adjacent in the list
-		"BUS2": {"B1", "OLD_SEC"}, // other output merged with the existing routing
-		"BUS3": {"", "C2"},        // other output with only a BACKUP event
-	}
+	refresh := func(t *testing.T, bodies map[string]string) (*pollStub, bool, error) {
+		t.Helper()
 
-	for output, w := range want {
-		r, _, ok := GetBusRouting(output, true)
-		if !ok || r.Pri != w.pri || r.Sec != w.sec {
-			t.Errorf("%s = %+v %t, want pri=%q sec=%q", output, r, ok, w.pri, w.sec)
+		stub := &pollStub{bodies: bodies}
+		srv := httptest.NewServer(stub)
+		t.Cleanup(srv.Close)
+
+		bt := &routebeat{
+			config:    routeCfg.Config{Schedule: routeCfg.Schedule{Lookahead: 25 * time.Minute}},
+			eventsAPI: newTestEventsAPI(t, srv.URL),
 		}
+
+		updated, err := bt.refreshOutput("BUS1")
+		return stub, updated, err
 	}
 
-	t.Run("error", func(t *testing.T) {
-		failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusBadGateway)
-		}))
-		defer failing.Close()
+	seed := func() {
+		resetCaches()
+		setSchedule(map[string]*schedule.BusRouting{
+			"BUS1": routing("OLD_PRI", "OLD_SEC", now.Add(-time.Hour), now.Add(time.Hour)),
+			"BUS2": routing("", "OLD_SEC", now.Add(-time.Hour), now.Add(time.Hour)),
+		})
+	}
 
-		bt := &routebeat{eventsAPI: newTestEventsAPI(t, failing.URL)}
-		if err := bt.refreshOutput("BUS1"); err == nil {
-			t.Error("expected an error")
+	t.Run("now and lookahead requests for the output, like the poll", func(t *testing.T) {
+		seed()
+
+		stub, updated, err := refresh(t, map[string]string{"now": nowBody, "now+25m": aheadBody})
+		if err != nil || !updated {
+			t.Fatalf("updated = %t err = %v", updated, err)
+		}
+
+		want := []url.Values{
+			{"output": {"BUS1"}, "start": {"now"}, "end": {"now"}, "task": {"apg"}},
+			{"output": {"BUS1"}, "start": {"now+25m"}, "end": {"now+25m"}, "task": {"apg"}},
+		}
+
+		if len(stub.queries) != len(want) {
+			t.Fatalf("requests = %d, want %d", len(stub.queries), len(want))
+		}
+
+		for i, q := range stub.queries {
+			if q.Encode() != want[i].Encode() {
+				t.Errorf("request %d = %v, want %v", i+1, q, want[i])
+			}
+		}
+
+		// the polled window is replaced by the current window (MAIN and BACKUP aren't adjacent in
+		// the list) and the upcoming window. the window in both responses is stored once
+		routes := scheduleStore.Routes("BUS1")
+		if len(routes) != 2 || routes[0].Pri != "A1" || routes[0].Sec != "A2" ||
+			routes[1].Pri != "NEXT_PRI" || routes[1].Sec != "NEXT_SEC" {
+			t.Errorf("BUS1 = %+v, want the current and upcoming windows", routes)
+		}
+
+		// events for other outputs are ignored, the poll keeps those current
+		if r, _, ok := GetBusRouting("BUS2", true); !ok || r.Pri != "" || r.Sec != "OLD_SEC" {
+			t.Errorf("BUS2 = %+v %t, want the stored routing", r, ok)
+		}
+
+		if _, _, ok := GetBusRouting("BUS3", true); ok {
+			t.Error("BUS3 was added from a refresh for BUS1")
+		}
+	})
+
+	t.Run("a failed lookahead fetch still applies now", func(t *testing.T) {
+		seed()
+
+		_, updated, err := refresh(t, map[string]string{"now": nowBody})
+		if err != nil || !updated {
+			t.Fatalf("updated = %t err = %v", updated, err)
+		}
+
+		if routes := scheduleStore.Routes("BUS1"); len(routes) != 1 || routes[0].Pri != "A1" || routes[0].Sec != "A2" {
+			t.Errorf("BUS1 = %+v, want the current window only", routes)
+		}
+	})
+
+	t.Run("a failed now fetch keeps the polled windows", func(t *testing.T) {
+		seed()
+
+		stub, updated, err := refresh(t, map[string]string{"now+25m": aheadBody})
+		if err == nil || updated {
+			t.Fatalf("updated = %t err = %v, want an error", updated, err)
+		}
+
+		if len(stub.queries) != 1 {
+			t.Errorf("requests = %d, want 1 (no lookahead request after a failure)", len(stub.queries))
+		}
+
+		if r, _, ok := GetBusRouting("BUS1", true); !ok || r.Pri != "OLD_PRI" {
+			t.Errorf("BUS1 = %+v %t, want the polled routing", r, ok)
+		}
+	})
+
+	t.Run("no events for the output keeps the polled windows", func(t *testing.T) {
+		seed()
+
+		other := "[" + apgEventJSON("BUS2", "B1", "MAIN", nowStart, nowEnd) + "]"
+
+		_, updated, err := refresh(t, map[string]string{"now": other, "now+25m": other})
+		if err != nil || updated {
+			t.Fatalf("updated = %t err = %v, want not updated", updated, err)
+		}
+
+		if r, _, ok := GetBusRouting("BUS1", true); !ok || r.Pri != "OLD_PRI" || r.Sec != "OLD_SEC" {
+			t.Errorf("BUS1 = %+v %t, want the polled routing", r, ok)
 		}
 	})
 }

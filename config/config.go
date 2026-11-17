@@ -57,7 +57,7 @@ type NotifierAuto struct {
 
 type EventsAPI struct {
 	Url         string            `config:"url"`          // required. the schedule source
-	Timeout     time.Duration     `config:"timeout"`      // per-output refresh when a bus goes unscheduled
+	Timeout     time.Duration     `config:"timeout"`      // each of the two per-output recheck requests when a bus goes unscheduled
 	BulkTimeout time.Duration     `config:"bulk_timeout"` // schedule poll of all events
 	Delay       time.Duration     `config:"delay"`        // pause before a refresh, to allow the api to receive new data
 	Headers     map[string]string `config:"headers"`

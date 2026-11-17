@@ -205,8 +205,8 @@ func TestRecheckRoute(t *testing.T) {
 		wantCalls int32
 	}{
 		{name: "no events api", wantState: Unsched},
-		{name: "api match", api: true, wantState: Primary, wantCalls: 1},
-		{name: "api failure", api: true, failAPI: true, wantState: Unsched, wantCalls: 1},
+		{name: "api match", api: true, wantState: Primary, wantCalls: 2},                  // now and lookahead
+		{name: "api failure", api: true, failAPI: true, wantState: Unsched, wantCalls: 1}, // no lookahead after a failed now
 	}
 
 	for _, tt := range tests {

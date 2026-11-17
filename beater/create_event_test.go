@@ -945,45 +945,78 @@ func TestCreateEventFromEdgeUnscheduledRecheck(t *testing.T) {
 		devEnd         string
 	}{
 		{
+			// the refresh is the bus's whole schedule: a MAIN only response replaces the polled window
 			name:      "events api success with no transition",
 			seed:      func() *BusState { return seedBus("BUS1", Primary, "SRC_NEW", 0, 0, 0) },
 			apiStatus: http.StatusOK,
 			apiBody:   event("SRC_NEW", "MAIN"),
-			want:      wantSchedule{matched: true, source: "recheck", status: "Primary", primary: "SRC_NEW", backup: "SRC2"},
+			want:      wantSchedule{matched: true, source: "recheck", status: "Primary", primary: "SRC_NEW", backup: ""},
 			counters:  Counters{Primary: 1},
 			bus:       Primary,
-			apiCalls:  1,
+			apiCalls:  2,
 		},
 		{
-			// the refreshed BACKUP is merged over the polled window and keeps its primary
+			// a BACKUP only response replaces the polled window, the polled primary isn't kept
 			name:      "events api success as backup is a transition",
 			seed:      func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
 			apiStatus: http.StatusOK,
 			apiBody:   event("SRC_NEW", "BACKUP"),
-			want:      wantSchedule{matched: true, source: "recheck", status: "Backup", primary: "SRC1", backup: "SRC_NEW"},
+			want:      wantSchedule{matched: true, source: "recheck", status: "Backup", primary: "", backup: "SRC_NEW"},
 			notifs: []wantNotif{
 				{"previous", "Primary", "SRC1", "Error", "-", isNow},
 				{"current", "Backup", "SRC_NEW", "Error", isNow, isEmpty},
 			},
 			counters: Counters{Primary: -1, Backup: 1},
 			bus:      Backup,
-			apiCalls: 1,
+			apiCalls: 2,
 		},
 		{
 			name:      "events api success with a correction",
 			seed:      func() *BusState { return seedBus("BUS1", Backup, "SRC2", 10*time.Minute, 20*time.Minute, 0) },
 			apiStatus: http.StatusOK,
 			apiBody:   event("SRC_NEW", "MAIN"),
-			want:      wantSchedule{matched: true, source: "recheck", status: "Primary", primary: "SRC_NEW", backup: "SRC2"},
+			want:      wantSchedule{matched: true, source: "recheck", status: "Primary", primary: "SRC_NEW", backup: ""},
 			notifs: []wantNotif{
 				{"previous", "Backup", "SRC2", "Correction", "", isNow},
 				{"current", "Primary", "SRC_NEW", "Correction", isNow, isEmpty},
 			},
 			counters: Counters{Backup: -1, Primary: 1},
 			bus:      Primary,
-			apiCalls: 1,
+			apiCalls: 2,
 			devStart: func(bs *BusState) string { return fmtTime(bs.TransitionStart) },
 			devEnd:   isNow,
+		},
+		{
+			// a MAIN and BACKUP pair folds into one window, the same as the poll
+			name:      "events api success with a main and backup pair",
+			seed:      func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
+			apiStatus: http.StatusOK,
+			apiBody: func(output string) string {
+				return "[" + apgEventJSON(output, "NEW_PRI", "MAIN", start, end) + "," + apgEventJSON(output, "SRC_NEW", "BACKUP", start, end) + "]"
+			},
+			want: wantSchedule{matched: true, source: "recheck", status: "Backup", primary: "NEW_PRI", backup: "SRC_NEW"},
+			notifs: []wantNotif{
+				{"previous", "Primary", "SRC1", "Error", "-", isNow},
+				{"current", "Backup", "SRC_NEW", "Error", isNow, isEmpty},
+			},
+			counters: Counters{Primary: -1, Backup: 1},
+			bus:      Backup,
+			apiCalls: 2,
+		},
+		{
+			// a response without events for the bus keeps the polled window
+			name:      "events api returns only other outputs",
+			seed:      func() *BusState { return seedBus("BUS1", Primary, "SRC1", 0, 0, 0) },
+			apiStatus: http.StatusOK,
+			apiBody: func(string) string {
+				return apgEventJSON("BUS2", "SRC_NEW", "MAIN", start, end)
+			},
+			want:           wantSchedule{matched: true, source: "cache", status: Unsched.String(), primary: "SRC1", backup: "SRC2"},
+			notifs:         unschedNotifs,
+			counters:       Counters{Primary: -1, Unsched: 1},
+			bus:            Unsched,
+			apiCalls:       2,
+			storeUnchanged: true,
 		},
 		{
 			name:           "no events api",
@@ -1015,7 +1048,7 @@ func TestCreateEventFromEdgeUnscheduledRecheck(t *testing.T) {
 			notifs:    unschedNotifs,
 			counters:  Counters{Primary: -1, Unsched: 1},
 			bus:       Unsched,
-			apiCalls:  1,
+			apiCalls:  2,
 		},
 		{
 			name:      "events api returns an inactive window",
@@ -1028,7 +1061,7 @@ func TestCreateEventFromEdgeUnscheduledRecheck(t *testing.T) {
 			notifs:         unschedNotifs,
 			counters:       Counters{Primary: -1, Unsched: 1},
 			bus:            Unsched,
-			apiCalls:       1,
+			apiCalls:       2,
 			storeUnchanged: true,
 		},
 		{
@@ -1042,7 +1075,7 @@ func TestCreateEventFromEdgeUnscheduledRecheck(t *testing.T) {
 			notifs:         unschedNotifs,
 			counters:       Counters{Primary: -1, Unsched: 1},
 			bus:            Unsched,
-			apiCalls:       1,
+			apiCalls:       2,
 			storeUnchanged: true,
 		},
 	}

@@ -153,7 +153,7 @@ func (bt *routebeat) recheckRoute(dstLabel, srcLabel string, routing *schedule.B
 		time.Sleep(bt.config.EventsAPI.Delay)
 	}
 
-	if err := bt.refreshOutput(dstLabel); err != nil {
+	if _, err := bt.refreshOutput(dstLabel); err != nil {
 		logp.Warn("events api refresh failed for Destination:%s: %v", dstLabel, err)
 	}
 

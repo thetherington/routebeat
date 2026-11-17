@@ -143,12 +143,12 @@ func TestEventsAt(t *testing.T) {
 	}
 }
 
-func TestRefreshOutput(t *testing.T) {
+func TestOutputEventsAt(t *testing.T) {
 	srv, queries := stub(t, http.StatusOK, apgEvent)
 
-	c := newClient(t, srv.URL, Config{Task: "apg"})
+	c := newClient(t, srv.URL, Config{OutputParam: "bus", Task: "apg"})
 
-	events, _, err := c.RefreshOutput(context.Background(), "BUS1")
+	events, _, err := c.OutputEventsAt(context.Background(), "BUS1", "now+25m")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,9 +157,15 @@ func TestRefreshOutput(t *testing.T) {
 		t.Errorf("events = %+v", events)
 	}
 
-	want := url.Values{"output": {"BUS1"}, "task": {"apg"}}
+	// start and end are always sent, without them the api returns a week of events for the output
+	want := url.Values{"bus": {"BUS1"}, "start": {"now+25m"}, "end": {"now+25m"}, "task": {"apg"}}
 	if q := queries(); len(q) != 1 || q[0].Encode() != want.Encode() {
 		t.Errorf("query = %v, want %v", q, want)
+	}
+
+	if got := c.RequestURL(url.Values{"output": {"BUS1"}, "start": {"now+25m"}, "end": {"now+25m"}}); got !=
+		srv.URL+"?end=now%2B25m&output=BUS1&start=now%2B25m&task=apg" {
+		t.Errorf("url = %s", got)
 	}
 }
 
@@ -175,7 +181,7 @@ func TestEventsErrors(t *testing.T) {
 	t.Run("malformed response", func(t *testing.T) {
 		srv, _ := stub(t, http.StatusOK, `[{"task":"apg"`)
 
-		if _, _, err := newClient(t, srv.URL, Config{}).RefreshOutput(context.Background(), "BUS1"); err == nil {
+		if _, _, err := newClient(t, srv.URL, Config{}).OutputEventsAt(context.Background(), "BUS1", "now"); err == nil {
 			t.Error("expected a parse error")
 		}
 	})
@@ -192,10 +198,10 @@ func TestEventsErrors(t *testing.T) {
 		return srv
 	}
 
-	t.Run("refresh uses the timeout", func(t *testing.T) {
+	t.Run("output events use the timeout", func(t *testing.T) {
 		c, _ := New(Config{Url: slow(t).URL, Timeout: 50 * time.Millisecond, BulkTimeout: 5 * time.Second})
 
-		if _, _, err := c.RefreshOutput(context.Background(), "BUS1"); err == nil {
+		if _, _, err := c.OutputEventsAt(context.Background(), "BUS1", "now"); err == nil {
 			t.Error("expected a timeout error")
 		}
 	})

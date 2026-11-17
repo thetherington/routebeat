@@ -11,6 +11,10 @@ import (
 // ErrNoTag is returned for an apg event that isn't tagged MAIN or BACKUP
 var ErrNoTag = errors.New("scheduler event has no MAIN or BACKUP tag")
 
+// StateDeleted is the state of a deleted scheduler event. the api can still return deleted
+// events, often overlapping the event that replaced them, so they're skipped
+const StateDeleted = 7
+
 // quoted task value used to cheaply discard non-apg events before any json decoding
 var apgTaskBytes = []byte(`"apg"`)
 
@@ -66,6 +70,7 @@ type Stats struct {
 	Events   int // apg events decoded
 	NonApg   int // items dropped as another task or shape
 	Invalid  int // items that failed to decode, or apg events with a bad date
+	Deleted  int // apg events skipped because they're deleted (StateDeleted)
 	NoTag    int // apg events without a MAIN or BACKUP tag
 	Routings int // routing windows built
 }
@@ -75,6 +80,7 @@ func (s *Stats) Add(o Stats) {
 	s.Events += o.Events
 	s.NonApg += o.NonApg
 	s.Invalid += o.Invalid
+	s.Deleted += o.Deleted
 	s.NoTag += o.NoTag
 	s.Routings += o.Routings
 }
@@ -108,7 +114,7 @@ func (e *Event) Routing() (*BusRouting, error) {
 }
 
 // ParseEvents decodes a payload (a JSON array of events, or a single event object) into apg events.
-// Items that are not apg or fail to decode are counted and skipped. Only a payload that is not JSON,
+// Items that are not apg, fail to decode, or are deleted are counted and skipped. Only a payload that is not JSON,
 // or is malformed JSON, returns an error
 func ParseEvents(payload []byte) ([]Event, Stats, error) {
 	var (
@@ -169,6 +175,11 @@ func ParseEvents(payload []byte) ([]Event, Stats, error) {
 		var event Event
 		if err := json.Unmarshal(item, &event); err != nil {
 			stats.Invalid++
+			continue
+		}
+
+		if event.State == StateDeleted {
+			stats.Deleted++
 			continue
 		}
 

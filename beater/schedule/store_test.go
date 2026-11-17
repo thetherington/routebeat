@@ -40,6 +40,96 @@ func TestStoreActive(t *testing.T) {
 	}
 }
 
+// overlapping windows resolve to the one whose start is closest to now, then the shorter one
+func TestStoreActiveOverlap(t *testing.T) {
+	at := func(h, m int) time.Time {
+		return testNow.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute)
+	}
+
+	tests := []struct {
+		name   string
+		routes []*BusRouting
+		at     time.Time
+		want   string
+	}{
+		{
+			name: "shorter event inside a longer one",
+			routes: []*BusRouting{
+				routing("LONG", "LONG_B", at(0, 0), at(4, 0)),
+				routing("SHORT", "SHORT_B", at(1, 0), at(2, 0)),
+			},
+			at:   at(1, 30),
+			want: "SHORT",
+		},
+		{
+			name: "longer event resumes after the shorter one ends",
+			routes: []*BusRouting{
+				routing("LONG", "", at(0, 0), at(4, 0)),
+				routing("SHORT", "", at(1, 0), at(2, 0)),
+			},
+			at:   at(2, 30),
+			want: "LONG",
+		},
+		{
+			name: "before the shorter event starts",
+			routes: []*BusRouting{
+				routing("LONG", "", at(0, 0), at(4, 0)),
+				routing("SHORT", "", at(1, 0), at(2, 0)),
+			},
+			at:   at(0, 30),
+			want: "LONG",
+		},
+		{
+			name: "start closest to now wins over the shorter window",
+			routes: []*BusRouting{
+				routing("EARLY_SHORT", "", at(0, 0), at(3, 0)),
+				routing("LATE_LONG", "", at(1, 0), at(6, 0)),
+			},
+			at:   at(2, 0),
+			want: "LATE_LONG",
+		},
+		{
+			name: "same start resolves to the shorter window",
+			routes: []*BusRouting{
+				routing("LONG", "", at(0, 0), at(4, 0)),
+				routing("SHORT", "", at(0, 0), at(1, 0)),
+			},
+			at:   at(0, 30),
+			want: "SHORT",
+		},
+		{
+			name: "back-to-back windows hand over at the boundary",
+			routes: []*BusRouting{
+				routing("FIRST", "", at(0, 0), at(1, 0)),
+				routing("NEXT", "", at(1, 0), at(2, 0)),
+			},
+			at:   at(1, 0),
+			want: "NEXT",
+		},
+		{
+			name: "three nested windows",
+			routes: []*BusRouting{
+				routing("DAY", "", at(0, 0), at(12, 0)),
+				routing("SHOW", "", at(2, 0), at(6, 0)),
+				routing("INSERT", "", at(3, 0), at(3, 30)),
+			},
+			at:   at(3, 15),
+			want: "INSERT",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewStore()
+			s.Replace(map[string][]*BusRouting{"BUS1": tt.routes}, testNow)
+
+			if r, ok := s.Active("BUS1", tt.at, true); !ok || r.Pri != tt.want {
+				t.Errorf("active = %+v %t, want pri=%s", r, ok, tt.want)
+			}
+		})
+	}
+}
+
 func TestStoreReplace(t *testing.T) {
 	fetchStart := testNow
 	active := func(pri string) []*BusRouting {
@@ -50,7 +140,7 @@ func TestStoreReplace(t *testing.T) {
 	s.Replace(map[string][]*BusRouting{"BUS1": active("OLD1"), "BUS2": active("OLD2"), "GONE": active("G")}, fetchStart.Add(-5*time.Minute))
 
 	// BUS2 is refreshed while the next poll is in flight
-	s.Upsert("BUS2", active("REFRESHED"), fetchStart.Add(time.Second))
+	s.ReplaceOutput("BUS2", active("REFRESHED"), fetchStart.Add(time.Second))
 
 	kept := s.Replace(map[string][]*BusRouting{
 		"BUS1":  active("POLL1"),
@@ -75,74 +165,88 @@ func TestStoreReplace(t *testing.T) {
 	}
 }
 
-func TestStoreUpsert(t *testing.T) {
+func TestStoreReplaceOutput(t *testing.T) {
 	start, end := testNow.Add(-time.Hour), testNow.Add(time.Hour)
 	next := routing("NEXT", "", end, end.Add(time.Hour))
 
 	seed := func() *Store {
 		s := NewStore()
-		s.Replace(map[string][]*BusRouting{"BUS1": {routing("PRI", "SEC", start, end), next}}, testNow.Add(-time.Minute))
+		s.Replace(map[string][]*BusRouting{
+			"BUS1":  {routing("PRI", "SEC", start, end), next},
+			"OTHER": {routing("O", "", start, end)},
+		}, testNow.Add(-time.Minute))
 		return s
 	}
 
-	t.Run("identical window keeps the other source", func(t *testing.T) {
+	t.Run("refreshed windows replace the stored ones", func(t *testing.T) {
 		s := seed()
 		held, _ := s.Active("BUS1", testNow, true)
 
-		if !s.Upsert("BUS1", []*BusRouting{routing("NEW_PRI", "", start, end)}, testNow) {
+		if !s.ReplaceOutput("BUS1", []*BusRouting{routing("NEW_PRI", "", start, end)}, testNow) {
 			t.Fatal("not applied")
 		}
 
-		r, _ := s.Active("BUS1", testNow, true)
-		if r.Pri != "NEW_PRI" || r.Sec != "SEC" {
-			t.Errorf("got %+v, want pri=NEW_PRI sec=SEC", r)
+		// a MAIN only refresh is the whole schedule for the bus, the old backup isn't kept
+		got := s.Routes("BUS1")
+		if len(got) != 1 || got[0].Pri != "NEW_PRI" || got[0].Sec != "" {
+			t.Errorf("routes = %+v, want only the refreshed window", got)
 		}
 
 		if held.Pri != "PRI" {
 			t.Error("routing held by a reader was mutated in place")
 		}
 
-		if got := s.Routes("BUS1"); len(got) != 2 || got[1] != next {
-			t.Errorf("routes = %+v, want the next window untouched", got)
+		if r, ok := s.Active("OTHER", testNow, true); !ok || r.Pri != "O" {
+			t.Errorf("OTHER = %+v %t, want untouched", r, ok)
 		}
 	})
 
-	t.Run("advanced window merges over the overlapping one", func(t *testing.T) {
+	t.Run("overlapping events stay separate", func(t *testing.T) {
 		s := seed()
 
-		s.Upsert("BUS1", []*BusRouting{routing("", "ADV_SEC", start.Add(-10*time.Minute), end)}, testNow)
+		s.ReplaceOutput("BUS1", []*BusRouting{
+			routing("SHORT", "SHORT_B", testNow.Add(-10*time.Minute), testNow.Add(10*time.Minute)),
+			routing("LONG", "LONG_B", start, end.Add(2*time.Hour)),
+		}, testNow)
 
 		got := s.Routes("BUS1")
-		if len(got) != 2 || got[0].Pri != "PRI" || got[0].Sec != "ADV_SEC" || !got[0].StartDate.Equal(start.Add(-10*time.Minute)) {
-			t.Errorf("routes = %+v", got)
+		if len(got) != 2 || got[0].Pri != "LONG" || got[1].Pri != "SHORT" {
+			t.Fatalf("routes = %+v, want both windows sorted by start", got)
 		}
-	})
 
-	t.Run("separate window is inserted in order", func(t *testing.T) {
-		s := seed()
-
-		s.Upsert("BUS1", []*BusRouting{routing("LATER", "", end.Add(2*time.Hour), end.Add(3*time.Hour))}, testNow)
-
-		got := s.Routes("BUS1")
-		if len(got) != 3 || got[2].Pri != "LATER" {
-			t.Errorf("routes = %+v", got)
+		if r, _ := s.Active("BUS1", testNow, true); r.Pri != "SHORT" || r.Sec != "SHORT_B" {
+			t.Errorf("active = %+v, want the shorter event", r)
 		}
 	})
 
 	t.Run("new output", func(t *testing.T) {
 		s := seed()
 
-		s.Upsert("BUS2", []*BusRouting{routing("B", "", start, end)}, testNow)
+		s.ReplaceOutput("BUS2", []*BusRouting{routing("B", "", start, end)}, testNow)
 
 		if r, ok := s.Active("BUS2", testNow, true); !ok || r.Pri != "B" {
 			t.Errorf("BUS2 = %+v %t", r, ok)
 		}
 	})
 
-	t.Run("expired and dateless windows are not applied", func(t *testing.T) {
+	t.Run("refresh is kept by a later poll", func(t *testing.T) {
 		s := seed()
 
-		applied := s.Upsert("BUS1", []*BusRouting{
+		s.ReplaceOutput("BUS1", []*BusRouting{routing("REFRESHED", "", start, end)}, testNow)
+
+		if kept := s.Replace(map[string][]*BusRouting{"BUS1": {routing("POLL", "", start, end)}}, testNow.Add(-time.Second)); kept != 1 {
+			t.Errorf("kept = %d, want 1", kept)
+		}
+
+		if r, _ := s.Active("BUS1", testNow, true); r.Pri != "REFRESHED" {
+			t.Errorf("active = %+v, want the refresh newer than the poll", r)
+		}
+	})
+
+	t.Run("no current window keeps the stored entry", func(t *testing.T) {
+		s := seed()
+
+		applied := s.ReplaceOutput("BUS1", []*BusRouting{
 			routing("PAST", "", start.Add(-2*time.Hour), start.Add(-time.Hour)),
 			{Pri: "NO_WINDOW"},
 			nil,
@@ -156,8 +260,24 @@ func TestStoreUpsert(t *testing.T) {
 			t.Errorf("routes = %+v, want unchanged", got)
 		}
 
-		if s.Upsert("BUS9", nil, testNow) || s.Length() != 1 {
-			t.Error("an empty upsert should not create an entry")
+		if s.ReplaceOutput("BUS1", nil, testNow) || len(s.Routes("BUS1")) != 2 {
+			t.Error("an empty refresh should keep the polled windows")
+		}
+
+		if s.ReplaceOutput("BUS9", nil, testNow) || s.Length() != 2 {
+			t.Error("an empty refresh should not create an entry")
+		}
+	})
+
+	t.Run("caller's windows are copied", func(t *testing.T) {
+		s := seed()
+		w := routing("MINE", "", start, end)
+
+		s.ReplaceOutput("BUS1", []*BusRouting{w}, testNow)
+		w.Pri = "CHANGED"
+
+		if r, _ := s.Active("BUS1", testNow, true); r.Pri != "MINE" {
+			t.Errorf("active = %+v, the stored window changed with the caller's", r)
 		}
 	})
 }
@@ -232,7 +352,7 @@ func TestStoreConcurrentAccess(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
-			s.Upsert("BUS1", []*BusRouting{routing(fmt.Sprintf("SRC%d", i), "", start, end)}, time.Now())
+			s.ReplaceOutput("BUS1", []*BusRouting{routing(fmt.Sprintf("SRC%d", i), "", start, end)}, time.Now())
 		}()
 
 		go func() {

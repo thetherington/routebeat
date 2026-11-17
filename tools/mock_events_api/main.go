@@ -1,14 +1,16 @@
 // mock_events_api is a local stand-in for the scheduler events api used by the routebeat events_api client.
 // it answers GETs with a MAIN and BACKUP apg event per output, active around the requested time:
 //
-//   - with ?output=<bus> (unscheduled recheck), events for that output active now
-//   - without output (schedule poll), events for every -outputs bus active at ?start= ("now" or "now+25m")
+//   - with ?output=<bus> (unscheduled recheck), events for that output active at ?start=
+//   - without output (schedule poll), events for every -outputs bus active at ?start=
+//
+// ?start= is "now" or "now+<duration>" ("now+25m"), and defaults to now.
 //
 // a ?task= other than apg returns no events, the way the real api filters by task.
 //
 //	go run ./tools/mock_events_api -addr :8090 -primary DCXA006D -outputs BSITAL,BSTRJA
 //
-//	curl 'http://localhost:8090/events?output=BSITAL&task=apg'
+//	curl 'http://localhost:8090/events?output=BSITAL&start=now&end=now&task=apg'
 //	curl 'http://localhost:8090/events?start=now%2B25m&end=now%2B25m&task=apg'
 //
 // routebeat.yml:

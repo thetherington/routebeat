@@ -80,12 +80,6 @@ func sameWindow(a, b *BusRouting) bool {
 	return hasWindow(a) && hasWindow(b) && a.StartDate.Equal(*b.StartDate) && a.EndDate.Equal(*b.EndDate)
 }
 
-// strictlyOverlap reports whether two windows share more than a boundary instant, so back-to-back
-// windows (one ends when the next starts) don't overlap
-func strictlyOverlap(a, b *BusRouting) bool {
-	return hasWindow(a) && hasWindow(b) && a.StartDate.Before(*b.EndDate) && b.StartDate.Before(*a.EndDate)
-}
-
 // sortByStart sorts the routings by start date, then end date
 func sortByStart(routes []*BusRouting) {
 	slices.SortStableFunc(routes, func(a, b *BusRouting) int {
