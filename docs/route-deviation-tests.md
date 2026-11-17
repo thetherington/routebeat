@@ -67,7 +67,7 @@ Each case can check any of the following:
 | Primary / Backup / Zorro / TDA / Unscheduled | `TestCreateEventFromEdgeStateResolution`, `TestMatchScheduledState`, `TestResolveRoutingState` |
 | Unknown (blank source) | `TestCreateEventFromEdgeBlankSource` |
 | Transitions, alerts, counters, deviation times | `TestCreateEventFromEdgeTransitions`, `TestCreateEventFromEdgeNotificationNoChange`, `TestCreateEventFromEdgeSequence` |
-| Unscheduled recheck | `TestCreateEventFromEdgeUnscheduledRecheck`, `TestRecheckRoute`, `TestRecheckRouteLogs`, `TestIsUnscheduledTransition`, `TestRefreshOutput` |
+| Unscheduled recheck | `TestCreateEventFromEdgeUnscheduledRecheck`, `TestRecheckRoute`, `TestRecheckRouteLogs`, `TestIsUnscheduledTransition`, `TestRefreshOutput`, `TestCreateEventFromEdgeConcurrentRecheck` |
 | Self-correction | `TestCreateEventFromEdgeQueryDefunct` |
 | Schedule poll and persistence | `TestPollSchedule`, `TestRelativeTime`, `TestSaveCaches` |
 | Scheduler payloads, routing windows, schedule store | `schedule` package: `TestParseEvents`, `TestEventRouting`, `TestBuildRoutes`, `TestMergeRouteLists`, `TestMergeBusRouting`, `TestStore*` |
@@ -207,6 +207,15 @@ This replaces an older behaviour in which a blank source matched a blank schedul
 - a failed lookahead request still applies the current window.
 - a failed now request returns an error, skips the lookahead request and keeps the polled window.
 - responses with no events for the bus keep the polled window.
+
+**`TestCreateEventFromEdgeConcurrentRecheck`** checks the per-bus lock. Subscription messages are handled concurrently, so a second notification can arrive while the first is rechecking. The stub API takes 150ms per request:
+
+| Case | Result |
+|---|---|
+| same bus alerts once | two Primary → `SRC_NEW` notifications for `BUS1`, the second sent mid-recheck: one recheck (2 API calls), one set of Primary → UnscheduledAudio alerts, Primary decremented once, bus stored as `UnscheduledAudio` |
+| different buses recheck in parallel | `BUS1` and `BUS2` recheck at the same time: both alert, 4 API calls, done in about one recheck's time (not two) |
+
+Without the lock, the first case makes 4 API calls and sends the alerts twice.
 
 ## Self-correction (defunct state)
 

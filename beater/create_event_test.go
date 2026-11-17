@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1134,6 +1135,143 @@ func TestCreateEventFromEdgeUnscheduledRecheck(t *testing.T) {
 			}
 		})
 	}
+}
+
+// newSlowEventsAPIStub answers every request with an empty event list after the delay, and counts calls
+func newSlowEventsAPIStub(t *testing.T, delay time.Duration) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+
+	var calls atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		time.Sleep(delay)
+		w.Write([]byte("[]"))
+	}))
+	t.Cleanup(srv.Close)
+
+	return srv, &calls
+}
+
+// subscription messages are handled concurrently: a second notification that arrives while the
+// first is rechecking must wait for it, not alert the same transition again
+func TestCreateEventFromEdgeConcurrentRecheck(t *testing.T) {
+	useNotifier(t, stubNotifier{})
+
+	const apiDelay = 150 * time.Millisecond
+
+	t.Run("same bus alerts once", func(t *testing.T) {
+		resetCaches()
+		seedSchedule()
+		seedBus("BUS1", Primary, "SRC1", 0, 0, 0)
+
+		srv, calls := newSlowEventsAPIStub(t, apiDelay)
+		bt := newTestBeat(t, beatOpts{eventsAPI: srv.URL})
+
+		var (
+			wg       sync.WaitGroup
+			results  [2]*EventResults
+			counters [2]Counters
+		)
+
+		for i := range results {
+			wg.Add(1)
+
+			go func() {
+				defer wg.Done()
+
+				res, err := bt.CreateEventFromEdge(
+					newTestEdge("BUS1", edgeOpts{src: "SRC_NEW"}), "MES", &counters[i], Notification)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+
+				results[i] = res
+			}()
+
+			// the second notification arrives while the first is in its recheck
+			time.Sleep(apiDelay / 2)
+		}
+
+		wg.Wait()
+
+		if t.Failed() {
+			return
+		}
+
+		if got := calls.Load(); got != 2 {
+			t.Errorf("events api calls = %d, want 2 (one recheck)", got)
+		}
+
+		assertNotifications(t, append(results[0].notifications, results[1].notifications...), []wantNotif{
+			{"previous", "Primary", "SRC1", "Error", "-", isNow},
+			{"current", Unsched.String(), "SRC_NEW", "Error", isNow, isEmpty},
+		})
+
+		// each event counts its current state (Unsched twice), only the transition decrements Primary.
+		// a duplicate transition would decrement Primary twice
+		total := Counters{
+			Primary: counters[0].Primary + counters[1].Primary,
+			Unsched: counters[0].Unsched + counters[1].Unsched,
+		}
+		assertCounters(t, &total, Counters{Primary: -1, Unsched: 2})
+
+		for _, res := range results {
+			assertSchedule(t, res, wantSchedule{matched: true, source: "cache", status: Unsched.String()})
+		}
+
+		assertBus(t, "BUS1", Unsched, "SRC_NEW")
+	})
+
+	t.Run("different buses recheck in parallel", func(t *testing.T) {
+		resetCaches()
+
+		now := time.Now()
+		setSchedule(map[string]*schedule.BusRouting{
+			"BUS1": routing("SRC1", "SRC2", now.Add(-time.Hour), now.Add(time.Hour)),
+			"BUS2": routing("SRC1", "SRC2", now.Add(-time.Hour), now.Add(time.Hour)),
+		})
+		seedBus("BUS1", Primary, "SRC1", 0, 0, 0)
+		seedBus("BUS2", Primary, "SRC1", 0, 0, 0)
+
+		srv, calls := newSlowEventsAPIStub(t, apiDelay)
+		bt := newTestBeat(t, beatOpts{eventsAPI: srv.URL})
+
+		var wg sync.WaitGroup
+		began := time.Now()
+
+		for _, bus := range []string{"BUS1", "BUS2"} {
+			wg.Add(1)
+
+			go func() {
+				defer wg.Done()
+
+				res, err := bt.CreateEventFromEdge(
+					newTestEdge(bus, edgeOpts{src: "SRC_NEW"}), "MES", &Counters{}, Notification)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+
+				assertNotificationsFor(t, bus, res.notifications, []wantNotif{
+					{"previous", "Primary", "SRC1", "Error", "-", isNow},
+					{"current", Unsched.String(), "SRC_NEW", "Error", isNow, isEmpty},
+				})
+			}()
+		}
+
+		wg.Wait()
+
+		// each recheck is two requests (2 x apiDelay), serialized buses would take twice that
+		if elapsed := time.Since(began); elapsed >= 3*apiDelay {
+			t.Errorf("took %s, want the two rechecks to run in parallel (< %s)", elapsed, 3*apiDelay)
+		}
+
+		if got := calls.Load(); got != 4 {
+			t.Errorf("events api calls = %d, want 4", got)
+		}
+	})
 }
 
 func TestCreateEventFromEdgeQueryDefunct(t *testing.T) {

@@ -684,6 +684,11 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 		event.Delete("routeableTerminal")
 	}
 
+	// serialize this destination: subscription messages are handled concurrently, so a second
+	// notification for the bus waits here until the first has finished its recheck and stored
+	// the new state. taken before the routing lookup so the waiter sees the refreshed routing
+	defer busLocks.Lock(dstLabel)()
+
 	// get the busrouting information from the schedule store based on the destination label
 	// return the event as-is if the store doesn't have a routing
 	routing, routingSource, ok := GetBusRouting(dstLabel, bt.config.Schedule.Dev.ValidateEndDate)

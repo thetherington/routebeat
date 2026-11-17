@@ -397,6 +397,7 @@ sequenceDiagram
 - The recheck never runs for queries, for buses seen for the first time, or for buses already unscheduled.
 - The recheck sends the same two requests as the poll (now, then now + `schedule.lookahead`), filtered to the bus with `output`. A start and end are always sent: without them the API returns every event it holds for the bus (the previous day and the next 6 days). If the now request fails, the lookahead request isn't sent and the store isn't changed. If only the lookahead request fails, the current window is still applied.
 - A recheck delays the destinations after it in the same batch by up to `events_api.delay` plus twice `events_api.timeout` (two requests).
+- Each bus is processed one notification or query at a time. Subscription messages are handled concurrently, so a second notification for a bus that arrives during its recheck waits for the recheck to finish, then sees the stored `UnscheduledAudio`. It doesn't run a second recheck or send the alerts again. Other buses aren't blocked. A query for that bus also waits, which delays the rest of that query batch once.
 
 ### Transitions and deviation times
 
