@@ -851,8 +851,12 @@ go test -race -count=1 ./beater/... ./config/
 
 For a description of every test of the deviation logic, see **[Route Deviation Tests](docs/route-deviation-tests.md)**.
 
-The tests include replays of real lab data in `beater/testdata/`: scheduler payloads, routebeat status documents and notification sequences. To refresh them from a lab Elasticsearch (read-only):
+The tests include replays of real lab data in `beater/testdata/`: scheduler events from the events API, and routebeat status documents and notification sequences from Elasticsearch. To refresh them (read-only):
 
 ```bash
-python3 -I beater/testdata/fetch_fixtures.py http://<elasticsearch>:9200
+# scheduler events from the events API (or --events-file <saved response>)
+python3 -I beater/testdata/fetch_fixtures.py scheduler --events-api https://<host>:20000/api/v1/scheduler/events --insecure
+
+# routebeat documents and notification sequences from Elasticsearch
+python3 -I beater/testdata/fetch_fixtures.py routebeat --es http://<elasticsearch>:9200
 ```

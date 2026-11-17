@@ -290,19 +290,19 @@ The `beater/schedule` package holds the event model, the routing windows and the
 
 ## Real lab data replays
 
-These tests use real Magnum Scheduler events and routebeat documents captured from a lab Elasticsearch and stored in `beater/testdata/`. The labels are kept exactly as recorded.
+These tests use real Magnum Scheduler events captured from the events API, and routebeat documents captured from a lab Elasticsearch, stored in `beater/testdata/`. The labels are kept exactly as recorded.
 
 | Fixture | Content |
 |---|---|
-| `scheduler_events.json` | a `MAIN`/`BACKUP` pair for bus `PMQE04`, six real tag combinations (`EXTERNAL`, `PxP`, ...), non-`apg` events (`silence`, `xmuds`, `route`), and a schedule document |
+| `scheduler_events.json` | events API responses (`start=now&end=now`): a `MAIN`/`BACKUP` pair for bus `BS90NW`, the real tag combinations (`MAIN`+`EXTERNAL`, `MAIN`+`PxP`, `BACKUP`+`PxP`, `BACKUP`+`EXTERNAL`), deleted (`state: 7`) events, and non-`apg` events when captured without the task filter. Every event carries `event_params` with `pri_src`/`sec_src` |
 | `routebeat_events.json` | 25 recorded query events covering every state, labels containing spaces, unmatched buses, and two blank-source events from an older build |
 | `notification_sequence.json` | ordered recorded notifications for buses `BSITAL` and `BSTRJA` |
 
 | Test | What it checks |
 |---|---|
-| `TestRealEventsDecode` (`schedule`) | every real event decodes, with the window as a UTC date string |
-| `TestRealEventsRouting` (`schedule`) | each real tag combination gives the right primary or backup, for example `MAIN`+`EXTERNAL`+`PxP` → primary |
-| `TestRealEventsMixedPayload` (`schedule`) | a real mixed payload keeps only the `apg` events; `silence`, `xmuds`, `route` and the schedule document are dropped |
+| `TestRealEventsDecode` (`schedule`) | every real event decodes, with the numeric epoch `start` kept as sent |
+| `TestRealEventsRouting` (`schedule`) | each real tag combination gives the right primary or backup, for example `MAIN`+`EXTERNAL` → primary; `event_params.sec_src` never fills the backup of a `MAIN` event |
+| `TestRealEventsMixedPayload` (`schedule`) | a real mixed payload keeps only the live `apg` events; deleted events are counted as `deleted` and non-`apg` events as `non-apg` |
 | `TestBuildRoutesRealPair` (`schedule`) | the real `MAIN`/`BACKUP` pair folds into one window with the primary and backup |
 | `TestRealRoutebeatReplay` | each recorded destination is rebuilt and checked again: the labels, status, schedule primary and backup, and counters must match what was recorded. The two blank-source events recorded as `Backup` by the older build are now expected to be `unknown`. |
 | `TestRealNotificationSequence` | replays each bus's recorded notifications in order. Every step must give the recorded status; every change must send the right `previous`/`current` alerts (Error, or Correction on a return to Primary, with `deviationEndTime`); steps with no change must send nothing. |
@@ -310,7 +310,11 @@ These tests use real Magnum Scheduler events and routebeat documents captured fr
 To refresh the fixtures from a lab (read-only):
 
 ```bash
-python3 -I beater/testdata/fetch_fixtures.py http://<elasticsearch>:9200
+# scheduler events from the events API (or --events-file <saved response>)
+python3 -I beater/testdata/fetch_fixtures.py scheduler --events-api https://<host>:20000/api/v1/scheduler/events --insecure
+
+# routebeat documents and notification sequences from Elasticsearch
+python3 -I beater/testdata/fetch_fixtures.py routebeat --es http://<elasticsearch>:9200
 ```
 
 ## Supporting packages

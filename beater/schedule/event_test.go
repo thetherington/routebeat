@@ -164,11 +164,12 @@ func TestIsActive(t *testing.T) {
 
 /********** real lab data snapshotted by ../testdata/fetch_fixtures.py **********/
 
+// events api responses (start=now&end=now) picked by fetch_fixtures.py
 type schedulerFixture struct {
-	ApgPair        []json.RawMessage `json:"apg_pair"`
-	ApgTagCombos   []json.RawMessage `json:"apg_tag_combos"`
-	NonApg         []json.RawMessage `json:"non_apg"`
-	ScheduleShaped json.RawMessage   `json:"schedule_shaped"`
+	ApgPair      []json.RawMessage `json:"apg_pair"`       // MAIN and BACKUP for the same output and window
+	ApgTagCombos []json.RawMessage `json:"apg_tag_combos"` // MAIN/BACKUP with EXTERNAL or PxP
+	Deleted      []json.RawMessage `json:"deleted"`        // apg events in state 7
+	NonApg       []json.RawMessage `json:"non_apg"`        // other tasks, empty when captured with task=apg
 }
 
 func loadSchedulerFixture(t *testing.T) schedulerFixture {
@@ -260,7 +261,8 @@ func TestRealEventsRouting(t *testing.T) {
 				t.Fatalf("tags %v: %v", e.Tags, err)
 			}
 
-			// MAIN takes the primary even when combined with EXTERNAL or PxP
+			// MAIN takes the primary even when combined with EXTERNAL or PxP. the real events carry
+			// event_params.pri_src/sec_src, which must never fill the other source
 			switch {
 			case slices.Contains(e.Tags, "MAIN"):
 				if br.Pri != e.Input || br.Sec != "" {
@@ -278,7 +280,11 @@ func TestRealEventsRouting(t *testing.T) {
 func TestRealEventsMixedPayload(t *testing.T) {
 	f := loadSchedulerFixture(t)
 
-	payload, err := json.Marshal(slices.Concat(f.ApgPair, f.ApgTagCombos, f.NonApg, []json.RawMessage{f.ScheduleShaped}))
+	if len(f.Deleted) == 0 {
+		t.Fatal("fixture has no deleted events")
+	}
+
+	payload, err := json.Marshal(slices.Concat(f.ApgPair, f.ApgTagCombos, f.Deleted, f.NonApg))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,9 +298,12 @@ func TestRealEventsMixedPayload(t *testing.T) {
 		t.Errorf("apg events = %d, want %d", len(events), want)
 	}
 
-	// silence, xmuds, route and the schedule document (which nests apg events but has no task)
-	if want := len(f.NonApg) + 1; stats.NonApg != want {
-		t.Errorf("nonApg = %d, want %d", stats.NonApg, want)
+	if stats.Deleted != len(f.Deleted) {
+		t.Errorf("deleted = %d, want %d", stats.Deleted, len(f.Deleted))
+	}
+
+	if stats.NonApg != len(f.NonApg) {
+		t.Errorf("nonApg = %d, want %d", stats.NonApg, len(f.NonApg))
 	}
 
 	if stats.Invalid != 0 {
