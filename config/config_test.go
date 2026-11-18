@@ -18,7 +18,7 @@ func TestScheduleAndEventsAPIDefaults(t *testing.T) {
 	}
 
 	if c.Schedule.Period != 5*time.Minute || c.Schedule.Lookahead != 25*time.Minute ||
-		c.Schedule.Dev.LoadCache || !c.Schedule.Dev.ValidateEndDate {
+		c.Schedule.StartTolerance != 5*time.Second || c.Schedule.Dev.LoadCache || !c.Schedule.Dev.ValidateEndDate {
 		t.Errorf("schedule defaults = %+v", c.Schedule)
 	}
 
@@ -45,9 +45,10 @@ func TestScheduleAndEventsAPIUnpack(t *testing.T) {
 
 	raw := config.MustNewConfigFrom(map[string]any{
 		"schedule": map[string]any{
-			"period":    "1m",
-			"lookahead": "30m",
-			"dev":       map[string]any{"validate_end_date": false},
+			"period":          "1m",
+			"lookahead":       "30m",
+			"start_tolerance": "0s",
+			"dev":             map[string]any{"validate_end_date": false},
 		},
 		"events_api": map[string]any{
 			"url":          "http://host/api/v1/scheduler/events",
@@ -66,7 +67,8 @@ func TestScheduleAndEventsAPIUnpack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if c.Schedule.Period != time.Minute || c.Schedule.Lookahead != 30*time.Minute || c.Schedule.Dev.ValidateEndDate {
+	if c.Schedule.Period != time.Minute || c.Schedule.Lookahead != 30*time.Minute ||
+		c.Schedule.StartTolerance != 0 || c.Schedule.Dev.ValidateEndDate {
 		t.Errorf("schedule = %+v", c.Schedule)
 	}
 

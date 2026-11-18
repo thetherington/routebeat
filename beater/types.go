@@ -60,15 +60,17 @@ func (rs RoutingState) String() string {
 type RoutingSource int
 
 const (
-	SourceNone    RoutingSource = iota
-	SourceCache                 // schedule store (events api poll)
-	SourceRecheck               // schedule store after an events api refresh of the destination (unscheduled recheck)
+	SourceNone      RoutingSource = iota
+	SourceCache                   // schedule store (events api poll)
+	SourceRecheck                 // schedule store after an events api refresh of the destination (unscheduled recheck)
+	SourceLookahead               // schedule store, a lookahead window starting within schedule.start_tolerance (early start)
 )
 
 var routingSourceName = map[RoutingSource]string{
-	SourceNone:    "none",
-	SourceCache:   "cache",
-	SourceRecheck: "recheck",
+	SourceNone:      "none",
+	SourceCache:     "cache",
+	SourceRecheck:   "recheck",
+	SourceLookahead: "lookahead",
 }
 
 func (rs RoutingSource) String() string {

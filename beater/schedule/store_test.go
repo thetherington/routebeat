@@ -40,6 +40,37 @@ func TestStoreActive(t *testing.T) {
 	}
 }
 
+func TestStoreStartingWithin(t *testing.T) {
+	s := NewStore()
+	s.Replace(map[string][]*BusRouting{
+		"BUS1": {
+			routing("NOW_PRI", "", testNow.Add(-time.Hour), testNow.Add(4*time.Second)),
+			routing("SOON_A", "", testNow.Add(3*time.Second), testNow.Add(time.Hour)),
+			routing("SOON_B", "", testNow.Add(5*time.Second), testNow.Add(time.Hour)),
+			routing("LATER", "", testNow.Add(6*time.Second), testNow.Add(time.Hour)),
+		},
+		"STARTED": {routing("P", "", testNow, testNow.Add(time.Hour))},
+	}, testNow)
+
+	got := s.StartingWithin("BUS1", testNow, 5*time.Second)
+	if len(got) != 2 || got[0].Pri != "SOON_A" || got[1].Pri != "SOON_B" {
+		t.Errorf("BUS1 = %+v, want SOON_A and SOON_B (the 5s boundary included), sorted", got)
+	}
+
+	// a window starting at t has already started, Active returns it
+	if got := s.StartingWithin("STARTED", testNow, 5*time.Second); len(got) != 0 {
+		t.Errorf("STARTED = %+v, want none", got)
+	}
+
+	if got := s.StartingWithin("BUS1", testNow, 0); len(got) != 0 {
+		t.Errorf("0 tolerance = %+v, want none", got)
+	}
+
+	if got := s.StartingWithin("MISSING", testNow, 5*time.Second); len(got) != 0 {
+		t.Errorf("MISSING = %+v, want none", got)
+	}
+}
+
 // overlapping windows resolve to the one whose start is closest to now, then the shorter one
 func TestStoreActiveOverlap(t *testing.T) {
 	at := func(h, m int) time.Time {

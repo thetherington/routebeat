@@ -30,6 +30,7 @@ type beatOpts struct {
 	defLabel   string // mapping default label
 	eventsAPI  string // stub server url, "" = disabled
 	noValidate bool   // disable Schedule.Dev.ValidateEndDate
+	tolerance  time.Duration
 }
 
 func newTestBeat(t *testing.T, o beatOpts) *routebeat {
@@ -38,7 +39,7 @@ func newTestBeat(t *testing.T, o beatOpts) *routebeat {
 	cfg := routeCfg.Config{
 		Zorro:    "zorro",
 		TDA:      "tda",
-		Schedule: routeCfg.Schedule{Dev: routeCfg.Developer{ValidateEndDate: !o.noValidate}},
+		Schedule: routeCfg.Schedule{StartTolerance: o.tolerance, Dev: routeCfg.Developer{ValidateEndDate: !o.noValidate}},
 	}
 
 	if !o.noMapping {
@@ -1133,6 +1134,163 @@ func TestCreateEventFromEdgeUnscheduledRecheck(t *testing.T) {
 			if tt.devEnd != "" {
 				checkValue(t, "deviationEndTime", fieldStr(t, res, "schedule.deviationEndTime"), tt.devEnd)
 			}
+		})
+	}
+}
+
+// the scheduler routes a few seconds before the event start. a source on a window starting within
+// schedule.start_tolerance is accepted from the stored lookahead window, without a recheck
+func TestCreateEventFromEdgeEarlyStart(t *testing.T) {
+	useNotifier(t, stubNotifier{})
+
+	const tolerance = 5 * time.Second
+
+	// BUS1 is on SRC1/SRC2 until the NEW_PRI/NEW_SEC window starts in startsIn
+	backToBack := func(startsIn time.Duration) {
+		now := time.Now()
+		scheduleStore.Replace(map[string][]*schedule.BusRouting{"BUS1": {
+			routing("SRC1", "SRC2", now.Add(-time.Hour), now.Add(startsIn)),
+			routing("NEW_PRI", "NEW_SEC", now.Add(startsIn), now.Add(time.Hour)),
+		}}, now)
+	}
+
+	// BUS1's last window ended a minute ago, the NEW_PRI/NEW_SEC window starts in 3s
+	betweenWindows := func(time.Duration) {
+		now := time.Now()
+		scheduleStore.Replace(map[string][]*schedule.BusRouting{"BUS1": {
+			routing("SRC1", "SRC2", now.Add(-time.Hour), now.Add(-time.Minute)),
+			routing("NEW_PRI", "NEW_SEC", now.Add(3*time.Second), now.Add(time.Hour)),
+		}}, now)
+	}
+
+	unschedNotifs := func(src string) []wantNotif {
+		return []wantNotif{
+			{"previous", "Primary", "SRC1", "Error", "-", isNow},
+			{"current", Unsched.String(), src, "Error", isNow, isEmpty},
+		}
+	}
+
+	tests := []struct {
+		name      string
+		schedule  func(startsIn time.Duration)
+		startsIn  time.Duration
+		tolerance time.Duration
+		src       string
+		want      wantSchedule
+		wantErr   error
+		notifs    []wantNotif
+		bus       RoutingState
+		apiCalls  int32
+	}{
+		{
+			name:      "primary of a window starting in 3s",
+			schedule:  backToBack,
+			startsIn:  3 * time.Second,
+			tolerance: tolerance,
+			src:       "NEW_PRI",
+			want:      wantSchedule{matched: true, source: "lookahead", status: "Primary", primary: "NEW_PRI", backup: "NEW_SEC"},
+			bus:       Primary,
+		},
+		{
+			name:      "backup of a window starting in 3s",
+			schedule:  backToBack,
+			startsIn:  3 * time.Second,
+			tolerance: tolerance,
+			src:       "NEW_SEC",
+			want:      wantSchedule{matched: true, source: "lookahead", status: "Backup", primary: "NEW_PRI", backup: "NEW_SEC"},
+			notifs: []wantNotif{
+				{"previous", "Primary", "SRC1", "Error", "-", isNow},
+				{"current", "Backup", "NEW_SEC", "Error", isNow, isEmpty},
+			},
+			bus: Backup,
+		},
+		{
+			name:      "source on the active window keeps it",
+			schedule:  backToBack,
+			startsIn:  3 * time.Second,
+			tolerance: tolerance,
+			src:       "SRC1",
+			want:      wantSchedule{matched: true, source: "cache", status: "Primary", primary: "SRC1", backup: "SRC2"},
+			bus:       Primary,
+		},
+		{
+			name:      "window starting outside the tolerance is rechecked",
+			schedule:  backToBack,
+			startsIn:  10 * time.Second,
+			tolerance: tolerance,
+			src:       "NEW_PRI",
+			want:      wantSchedule{matched: true, source: "cache", status: Unsched.String(), primary: "SRC1", backup: "SRC2"},
+			notifs:    unschedNotifs("NEW_PRI"),
+			bus:       Unsched,
+			apiCalls:  2,
+		},
+		{
+			name:      "source not on the upcoming window is rechecked",
+			schedule:  backToBack,
+			startsIn:  3 * time.Second,
+			tolerance: tolerance,
+			src:       "OTHER",
+			want:      wantSchedule{matched: true, source: "cache", status: Unsched.String(), primary: "SRC1", backup: "SRC2"},
+			notifs:    unschedNotifs("OTHER"),
+			bus:       Unsched,
+			apiCalls:  2,
+		},
+		{
+			name:     "0 tolerance is disabled",
+			schedule: backToBack,
+			startsIn: 3 * time.Second,
+			src:      "NEW_PRI",
+			want:     wantSchedule{matched: true, source: "cache", status: Unsched.String(), primary: "SRC1", backup: "SRC2"},
+			notifs:   unschedNotifs("NEW_PRI"),
+			bus:      Unsched,
+			apiCalls: 2,
+		},
+		{
+			name:      "between windows matches the upcoming window",
+			schedule:  betweenWindows,
+			tolerance: tolerance,
+			src:       "NEW_PRI",
+			want:      wantSchedule{matched: true, source: "lookahead", status: "Primary", primary: "NEW_PRI", backup: "NEW_SEC"},
+			bus:       Primary,
+		},
+		{
+			name:      "between windows with an unscheduled source is not found",
+			schedule:  betweenWindows,
+			tolerance: tolerance,
+			src:       "OTHER",
+			want:      wantSchedule{matched: false, source: "none"},
+			wantErr:   ErrScheduleBusNotFound,
+			bus:       Primary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetCaches()
+			tt.schedule(tt.startsIn)
+			seedBus("BUS1", Primary, "SRC1", 0, 0, 0)
+
+			srv, calls := newEventsAPIStub(t, http.StatusOK, func(string) string { return "[]" })
+			bt := newTestBeat(t, beatOpts{eventsAPI: srv.URL, tolerance: tt.tolerance})
+
+			res, err := bt.CreateEventFromEdge(newTestEdge("BUS1", edgeOpts{src: tt.src}), "MES", &Counters{}, Notification)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+
+			if got := calls.Load(); got != tt.apiCalls {
+				t.Errorf("events api calls = %d, want %d", got, tt.apiCalls)
+			}
+
+			assertSchedule(t, res, tt.want)
+			assertNotifications(t, res.notifications, tt.notifs)
+
+			// a bus that isn't found keeps its stored state and source
+			src := tt.src
+			if tt.wantErr != nil {
+				src = "SRC1"
+			}
+			assertBus(t, "BUS1", tt.bus, src)
 		})
 	}
 }

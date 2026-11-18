@@ -55,6 +55,11 @@ routebeat:
     # stored before they start (default 25m)
     lookahead: 25m
 
+    # the scheduler makes routes a few seconds before the event start. a source that doesn't match
+    # the active window (or a bus between windows) is matched against the stored windows starting
+    # within this tolerance, so it isn't reported unscheduled and rechecked. 0s disables (default 5s)
+    #start_tolerance: 5s
+
     # developer settings
     #dev:
       # use the saved schedule store (scheduleStore.gob) and don't poll the events api (default false)

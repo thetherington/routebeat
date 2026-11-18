@@ -271,10 +271,22 @@ The event's `schedule.routingSource` says how the schedule routing was found:
 | Value | Meaning |
 |---|---|
 | `cache` | the schedule store (events API poll) |
+| `lookahead` | the schedule store, a window starting within `schedule.start_tolerance` that lists the source (an [early start](#early-starts)) |
 | `recheck` | the schedule store, right after an [unscheduled recheck](#unscheduled-recheck) refreshed the bus and the source matched |
 | `none` | the bus has no active window in the store |
 
 > `recheck` replaces the `hotcache` value of earlier versions. Update any dashboards or saved searches that filter on `hotcache`.
+
+#### Early starts
+
+The scheduler makes a route a few seconds (typically 3 or 4) before the event's start time. At that moment the new source isn't on the window that's still active, so it would be reported `UnscheduledAudio` and [rechecked](#unscheduled-recheck), and at the top of the hour that means one recheck per bus. Instead, when the source doesn't match the active window, or the bus is between windows, routebeat looks at the stored windows that start within `schedule.start_tolerance` (default `5s`):
+
+- If one of them lists the source as its primary or backup, that window is used: the bus is `Primary` or `Backup`, the event reports that window's primary and backup, and `routingSource` is `lookahead`. No API call is made, because the lookahead poll already stored the window.
+- Otherwise the source is resolved against the active window as usual (Zorro, TDA, or `UnscheduledAudio` and a recheck).
+- A source that matches the active window always keeps it, even when a window is about to start.
+- It's off when `start_tolerance` is `0s`, for a blank source, and with `schedule.dev.validate_end_date: false`.
+
+The `ScheduleEarlyStart` debug selector logs each match.
 
 ### How schedule labels match nameset labels
 
@@ -330,8 +342,15 @@ flowchart TD
     B -- yes --> C["Build event, copy namesets,<br/>pick destination and source labels"]
     C --> E{"Bus in schedule store<br/>(active window)?"}
     E -- yes --> R2["routing from cache"]
-    E -- no --> X2["Publish event<br/>schedule.matched = false<br/>routingSource = none"]
-    R2 --> F
+    E -- no --> L2{"Source on a window starting<br/>within start_tolerance?"}
+    L2 -- no --> X2["Publish event<br/>schedule.matched = false<br/>routingSource = none"]
+    L2 -- yes --> R3["routing from lookahead"]
+    R2 --> S{"Source on the<br/>active window?"}
+    S -- yes --> F
+    S -- no --> L1{"Source on a window starting<br/>within start_tolerance?"}
+    L1 -- yes --> R3
+    L1 -- no --> F
+    R3 --> F
     F{"Source label blank?"} -- yes --> X3["Publish event, status unknown<br/>(report only)"]
     F -- no --> G{"Source = primary?"}
     G -- yes --> P["Primary"]
@@ -618,7 +637,7 @@ One event per destination, per query or notification:
 | `schedule.status` | keyword | `Primary`, `Backup`, `Zorro`, `TDA`, `UnscheduledAudio` or `unknown` |
 | `schedule.primary` / `schedule.backup` | keyword | scheduled primary (`MAIN`) and backup (`BACKUP`) source labels |
 | `schedule.matched` | boolean | `false` when the bus isn't in the schedule |
-| `schedule.routingSource` | keyword | `cache`, `recheck` or `none` |
+| `schedule.routingSource` | keyword | `cache`, `recheck`, `lookahead` or `none` |
 | `schedule.deviationStartTime` | keyword | RFC3339 start of the current deviation, or `-` (see [deviation times](#transitions-and-deviation-times)) |
 | `schedule.deviationEndTime` | keyword | RFC3339 end of a deviation; only set on the event that returns the bus to Primary |
 
@@ -690,6 +709,7 @@ routebeat:
   schedule:
     period: 5m
     lookahead: 25m
+    # start_tolerance: 5s
 
   events_api:
     url: "http://<scheduler-events>/api/v1/scheduler/events"
@@ -730,6 +750,7 @@ routebeat:
 | **`schedule`** | | **Schedule store** |
 | `schedule.period` | `5m` | how often every bus's events are fetched from the events API |
 | `schedule.lookahead` | `25m` | each poll also fetches the events active at now + lookahead, so the next window is stored before it starts |
+| `schedule.start_tolerance` | `5s` | a source that doesn't match the active window is matched against the stored windows starting within this tolerance, for routes the scheduler makes a few seconds early (see [Early starts](#early-starts)). `0s` disables it |
 | `schedule.dev.load_cache` | `false` | development: use the saved `scheduleStore.gob` and don't poll the events API |
 | `schedule.dev.validate_end_date` | `true` | only use schedule windows that are active now |
 | **`events_api`** | | **Scheduler events API** (required) |
@@ -813,6 +834,7 @@ logging.selectors: ["ProcessResults.*", "ScheduleCache", "ScheduleRecheck"]
 |---|---|---|
 | `ProcessResults.Query`<br>`ProcessResults.Notifications` | For each batch of that event type (periodic query or subscription notification): the tag, number of destinations and event type; then the totals of **processed**, **discarded** (tag didn't match exactly), **unmatched** (not in the schedule) and **expired**; and how many alerts were sent for the tag. Notification batches also list the destinations they contained (`Destinations: BSITAL,BSTRJA`, using the mapping nameset label, or the Magnum destination name without mapping); query batches only log totals. `ProcessResults.*` or `ProcessResults` turns on both (see below) | follow each poll or each subscription message on its own, and see how many destinations matched the schedule |
 | `ScheduleCache` | For every destination that matched a schedule: the destination and source labels, the routing source (`cache` or `recheck`), and the schedule found (primary, backup, window) | find out why a bus got a particular status: compare its source label with the scheduled primary and backup |
+| `ScheduleEarlyStart` | A source matched a window starting within `schedule.start_tolerance`, so it was accepted without a recheck:<br>`Early start Destination:<bus> Source:<source label> State:<Primary\|Backup> Starts:<RFC3339 start> (in <time to start>) Primary:<primary> Backup:<backup>` | confirm that routes made just before the event start aren't rechecked |
 | `ScheduleRecheck` | An unscheduled recheck refreshed the bus and found a routing that matches the source. It uses the same fixed `Key:value` format as `ScheduleRecheckMiss`, with `State` in place of `Reason`:<br>`Recheck hit Destination:<bus> Source:<source label> State:<Primary\|Backup> Primary:<primary> Backup:<backup>` | confirm that the events API refresh rescued a bus from `UnscheduledAudio` |
 | `ScheduleRecheckMiss` | Each unscheduled recheck that doesn't find a match, in a fixed `Key:value` format:<br>`Recheck miss Destination:<bus> Source:<source label> Reason:<no_active_routing\|source_not_scheduled> Primary:<primary> Backup:<backup>`<br>`no_active_routing` means the store has no active window for the bus after the refresh, and Primary and Backup are blank. `source_not_scheduled` means an active window exists but the source is neither its primary nor its backup. | find buses the recheck couldn't rescue, and collect the destination and source pairs, for example to check later what the events API should have returned |
 | `QueryScheduler` | After each schedule poll: the number of events returned for now and for the lookahead, the number of buses stored, and how many buses were kept because a recheck refreshed them during the poll | check that the poll is running and returning the expected number of buses |

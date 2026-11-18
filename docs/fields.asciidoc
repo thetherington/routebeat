@@ -15943,7 +15943,7 @@ required: False
 *`schedule.routingSource`*::
 +
 --
-How the schedule routing was found: cache (events api schedule poll), recheck (events api refresh of the destination when it went unscheduled), none (unmatched)
+How the schedule routing was found: cache (events api schedule poll), recheck (events api refresh of the destination when it went unscheduled), lookahead (a stored window starting within schedule.start_tolerance, for a route made just before the event start), none (unmatched)
 
 
 type: keyword

@@ -54,6 +54,10 @@ routebeat:
     # also fetch the events active at now+lookahead, so upcoming windows are stored before they start
     lookahead: 25m
 
+    # a source on a window starting within this tolerance is accepted, for routes made a few
+    # seconds before the event start (0s disables)
+    #start_tolerance: 5s
+
   # Scheduler events api (required). Polled for the schedule, and queried for one destination when it goes unscheduled
   events_api:
     url: "http://127.0.0.1:8080/api/v1/scheduler/events"

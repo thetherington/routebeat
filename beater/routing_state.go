@@ -50,6 +50,31 @@ func (bt *routebeat) resolveRoutingState(srcLabel string, srcTags []string, rout
 	return Unsched
 }
 
+// earlyStartRouting finds a window for the destination that starts within schedule.start_tolerance
+// and lists the source as its primary or backup. the scheduler makes routes a few seconds before
+// the event start, so without it the source is checked against the window that's ending, found
+// unscheduled, and rechecked. the upcoming windows are stored by the lookahead poll, no api call is made.
+// disabled with a 0 tolerance, a blank source, or when windows aren't evaluated (dev.validate_end_date)
+func (bt *routebeat) earlyStartRouting(dstLabel, srcLabel string) (*schedule.BusRouting, bool) {
+	tolerance := bt.config.Schedule.StartTolerance
+	if tolerance <= 0 || srcLabel == "" || !bt.config.Schedule.Dev.ValidateEndDate {
+		return nil, false
+	}
+
+	now := time.Now()
+
+	for _, r := range scheduleStore.StartingWithin(dstLabel, now, tolerance) {
+		if state := matchScheduledState(srcLabel, r); state != Unsched {
+			logp.Debug("ScheduleEarlyStart", "Early start Destination:%s Source:%s State:%s Starts:%s (in %s) Primary:%s Backup:%s",
+				dstLabel, srcLabel, state, r.StartDate.Format(time.RFC3339), r.StartDate.Sub(now).Round(time.Millisecond), r.Pri, r.Sec)
+
+			return r, true
+		}
+	}
+
+	return nil, false
+}
+
 // scheduleFields builds the "schedule" group of the event
 func scheduleFields(buscode string, state RoutingState, routing *schedule.BusRouting, source RoutingSource) mapstr.M {
 	return mapstr.M{

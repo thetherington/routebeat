@@ -35,7 +35,10 @@ type Developer struct {
 type Schedule struct {
 	Period    time.Duration `config:"period"`    // how often all events are fetched
 	Lookahead time.Duration `config:"lookahead"` // second fetch at now+lookahead for the upcoming windows
-	Dev       Developer     `config:"dev"`
+	// a source that doesn't match the active window is matched against a window starting within this
+	// tolerance, for routes made a few seconds before the event start. 0 disables it
+	StartTolerance time.Duration `config:"start_tolerance"`
+	Dev            Developer     `config:"dev"`
 }
 
 type Notifier struct {
@@ -99,8 +102,9 @@ var DefaultConfig = Config{
 		SubReconnectIdle: 120 * time.Minute,
 	},
 	Schedule: Schedule{
-		Period:    5 * time.Minute,
-		Lookahead: 25 * time.Minute,
+		Period:         5 * time.Minute,
+		Lookahead:      25 * time.Minute,
+		StartTolerance: 5 * time.Second,
 		Dev: Developer{
 			LoadCache:       false,
 			ValidateEndDate: true,

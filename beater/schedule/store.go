@@ -119,6 +119,29 @@ func (s *Store) Active(output string, t time.Time, evalEndDate bool) (*BusRoutin
 	return best, best != nil
 }
 
+// StartingWithin returns the output's windows that haven't started at t but start within d,
+// sorted by start date. used to accept a route made a few seconds before its event starts
+func (s *Store) StartingWithin(output string, t time.Time, d time.Duration) []*BusRouting {
+	entry, ok := s.c.Get(output)
+	if !ok || entry == nil || d <= 0 {
+		return nil
+	}
+
+	limit := t.Add(d)
+
+	var upcoming []*BusRouting
+
+	for _, r := range entry.Routes {
+		if !hasWindow(r) || !r.StartDate.After(t) || r.StartDate.After(limit) {
+			continue
+		}
+
+		upcoming = append(upcoming, r)
+	}
+
+	return upcoming
+}
+
 // Routes returns a copy of the stored routing list for the output
 func (s *Store) Routes(output string) []*BusRouting {
 	entry, ok := s.c.Get(output)

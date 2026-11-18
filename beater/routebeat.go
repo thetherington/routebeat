@@ -692,6 +692,15 @@ func (bt *routebeat) CreateEventFromEdge(edge *Edge, tag string, counters *Count
 	// get the busrouting information from the schedule store based on the destination label
 	// return the event as-is if the store doesn't have a routing
 	routing, routingSource, ok := GetBusRouting(dstLabel, bt.config.Schedule.Dev.ValidateEndDate)
+
+	// a source that isn't on the active window (or a bus between windows) may be the route for an
+	// event about to start: the scheduler routes a few seconds early. use that upcoming window
+	if !ok || matchScheduledState(srcLabel, routing) == Unsched {
+		if early, found := bt.earlyStartRouting(dstLabel, srcLabel); found {
+			routing, routingSource, ok = early, SourceLookahead, true
+		}
+	}
+
 	if !ok {
 		event.PutValue("schedule.matched", false)
 		event.PutValue("schedule.routingSource", routingSource.String())

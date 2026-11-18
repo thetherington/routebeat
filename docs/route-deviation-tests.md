@@ -68,6 +68,7 @@ Each case can check any of the following:
 | Unknown (blank source) | `TestCreateEventFromEdgeBlankSource` |
 | Transitions, alerts, counters, deviation times | `TestCreateEventFromEdgeTransitions`, `TestCreateEventFromEdgeNotificationNoChange`, `TestCreateEventFromEdgeSequence` |
 | Unscheduled recheck | `TestCreateEventFromEdgeUnscheduledRecheck`, `TestRecheckRoute`, `TestRecheckRouteLogs`, `TestIsUnscheduledTransition`, `TestRefreshOutput`, `TestCreateEventFromEdgeConcurrentRecheck` |
+| Early starts | `TestCreateEventFromEdgeEarlyStart`, `TestStoreStartingWithin` |
 | Self-correction | `TestCreateEventFromEdgeQueryDefunct` |
 | Schedule poll and persistence | `TestPollSchedule`, `TestRelativeTime`, `TestSaveCaches` |
 | Scheduler payloads, routing windows, schedule store | `schedule` package: `TestParseEvents`, `TestEventRouting`, `TestBuildRoutes`, `TestMergeRouteLists`, `TestMergeBusRouting`, `TestStore*` |
@@ -217,6 +218,21 @@ This replaces an older behaviour in which a blank source matched a blank schedul
 
 Without the lock, the first case makes 4 API calls and sends the alerts twice.
 
+## Early starts
+
+**`TestCreateEventFromEdgeEarlyStart`** sets up the case where the scheduler routes a few seconds before the event start. `BUS1` is on Primary (`SRC1`), its `SRC1`/`SRC2` window is ending, and a `NEW_PRI`/`NEW_SEC` window starts in 3 seconds. `schedule.start_tolerance` is 5s unless noted. A stub events API counts recheck calls.
+
+| Case | Result |
+|---|---|
+| primary of a window starting in 3s | `Primary` with `NEW_PRI`/`NEW_SEC` from `lookahead`; no alerts; no recheck |
+| backup of a window starting in 3s | `Backup` with `NEW_PRI`/`NEW_SEC` from `lookahead`; Primary → Backup Error alerts; no recheck |
+| source on the active window keeps it | `SRC1` stays `Primary` on the `SRC1`/`SRC2` window |
+| window starting outside the tolerance is rechecked | the window starts in 10s: `UnscheduledAudio` on the active window, 2 API calls |
+| source not on the upcoming window is rechecked | `OTHER`: `UnscheduledAudio`, 2 API calls |
+| 0 tolerance is disabled | `UnscheduledAudio`, 2 API calls |
+| between windows matches the upcoming window | the last window ended a minute ago: `NEW_PRI` is `Primary` from `lookahead` instead of not found |
+| between windows with an unscheduled source is not found | `OTHER`: `schedule.matched` false, the stored state is unchanged |
+
 ## Self-correction (defunct state)
 
 **`TestCreateEventFromEdgeQueryDefunct`** sends queries that disagree with the stored state.
@@ -284,6 +300,7 @@ The `beater/schedule` package holds the event model, the routing windows and the
 | `TestStoreActive` | the window active now is returned; the upcoming window becomes active when the current one ends; an expired window isn't returned unless end dates aren't validated |
 | `TestStoreReplace` | a poll replaces every bus, removes buses missing from it, and keeps a bus refreshed after the poll began |
 | `TestStoreActiveOverlap` | overlapping windows resolve to the one whose start is closest to now (a shorter event inside a longer one wins, and the longer one resumes after it); the same start resolves to the shorter window; back-to-back windows hand over at the boundary |
+| `TestStoreStartingWithin` | returns the windows that haven't started yet but start within the tolerance (the boundary included), sorted; a window starting at that instant has already started; a 0 tolerance and an unknown bus return none |
 | `TestStoreReplaceOutput` | a refresh replaces only that bus's windows (nothing from the old windows is kept); overlapping events stay separate; a new bus is added; a later poll keeps the refresh; a refresh with no current window keeps the stored entry and doesn't create one; the caller's windows are copied and a routing a reader already holds is never changed in place |
 | `TestStorePrune` | expired windows and buses left empty are removed, both in memory and after a save and load |
 | `TestStoreConcurrentAccess` | polls, refreshes, pruning and lookups at the same time, under the race detector |
