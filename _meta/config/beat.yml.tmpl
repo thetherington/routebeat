@@ -31,3 +31,7 @@ routebeat:
       client_id: "insite-poller"
       client_secret: "QdS1US0v2xABh4d5CliQAWZrmSGPMOxd"
       token_url: "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token"
+
+    # Close and reconnect the subscription client when no notification has been
+    # received for this long (detects stale subscriptions)
+    sub_reconnect_idle: 120m

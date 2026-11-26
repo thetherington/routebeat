@@ -1,11 +1,14 @@
 package beater
 
+// $tag is passed wrapped in double quotes (strconv.Quote) so that listIncludes
+// matches the exact tag rather than any tag containing it.
+
 type QueryTerminals struct {
-	Terminals Terminals `graphql:"terminals(input: {filters: [{id: \"isDst\", booleanValue: true}, {id:\"isSub\", booleanValue: true}, {id: \"tags\", value: $tag}]})"`
+	Terminals Terminals `graphql:"terminals(input: {filters: [{id: \"isTlr\", booleanValue: true}, {id: \"isDst\", booleanValue: true}, {id:\"isSub\", booleanValue: true}, {id: \"tags\", listIncludes: [$tag]}]})"`
 }
 
 type SubscriptionTerminalsUpdated struct {
-	TerminalsUpdated []Edge `graphql:"terminalsUpdated(input: {filters: [{id: \"isDst\", booleanValue: true}, {id:\"isSub\", booleanValue: true}, {id: \"tags\", value: $tag}]})"`
+	TerminalsUpdated []Edge `graphql:"terminalsUpdated(input: {filters: [{id: \"isTlr\", booleanValue: true}, {id: \"isDst\", booleanValue: true}, {id:\"isSub\", booleanValue: true}, {id: \"tags\", listIncludes: [$tag]}]})"`
 }
 
 type Terminals struct {
@@ -57,38 +60,128 @@ type SubscribedSource struct {
 }
 
 /********** query template
-query {
-	terminals(input: {filters: [{id: "isDst", booleanValue: true}, {id:"isSub", booleanValue: true}, {id: "tags", value: "IPAN"}]}){
-    	totalCount
-    	edges(limit: 2000) {
-			id name tags isSub isDst type
-			... on RouteableTerminal {
-				routedPhysicalSource {
-					id name isSrc
-					namesetNames {
-						id name
-						nameset{
-							id name
-						}
-					}
-				}
-				subscribedSource {
-					id name isSub
-					namesetNames {
-						id name
-						nameset{
-							id name
-						}
-					}
-				}
-			}
-			namesetNames {
-				id name
-				nameset {
-					id name
-				}
-			}
-		}
-  	}
+variables: {"limit": 2000, "tag": "\"IPAN\""}
+
+query ($limit: Int!, $tag: String!) {
+  terminals(
+    input: {
+      filters: [
+        { id: "isTlr", booleanValue: true }
+        { id: "isDst", booleanValue: true }
+        { id: "isSub", booleanValue: true }
+        { id: "tags", listIncludes: [$tag] }
+      ]
+    }
+  ) {
+    totalCount
+    edges(limit: $limit) {
+      id
+      name
+      tags
+      isSub
+      isDst
+      type
+      namesetNames {
+        id
+        name
+        nameset {
+          id
+          name
+        }
+      }
+      ... on RouteableTerminal {
+        routedPhysicalSource {
+          id
+          name
+          isSrc
+          tags
+          namesetNames {
+            id
+            name
+            nameset {
+              id
+              name
+            }
+          }
+        }
+        subscribedSource {
+          id
+          name
+          isSub
+          tags
+          namesetNames {
+            id
+            name
+            nameset {
+              id
+              name
+            }
+          }
+        }
+      }
+    }
+  }
+}
+**********/
+
+/********** subscription template
+variables: {"tag": "\"IPAN\""}
+
+subscription ($tag: String!) {
+  terminalsUpdated(
+    input: {
+      filters: [
+        { id: "isTlr", booleanValue: true }
+        { id: "isDst", booleanValue: true }
+        { id: "isSub", booleanValue: true }
+        { id: "tags", listIncludes: [$tag] }
+      ]
+    }
+  ) {
+    id
+    name
+    tags
+    isSub
+    isDst
+    type
+    namesetNames {
+      id
+      name
+      nameset {
+        id
+        name
+      }
+    }
+    ... on RouteableTerminal {
+      routedPhysicalSource {
+        id
+        name
+        isSrc
+        tags
+        namesetNames {
+          id
+          name
+          nameset {
+            id
+            name
+          }
+        }
+      }
+      subscribedSource {
+        id
+        name
+        isSub
+        tags
+        namesetNames {
+          id
+          name
+          nameset {
+            id
+            name
+          }
+        }
+      }
+    }
+  }
 }
 **********/

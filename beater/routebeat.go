@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
@@ -22,6 +24,13 @@ import (
 
 const (
 	CLIENT_TIMEOUT = 10 // time in seconds
+
+	// websocket idle time (no message of any kind received) after which the
+	// subscription client treats the connection as stale and reconnects
+	SUB_WEBSOCKET_IDLE_TIMEOUT = 1 * time.Minute
+
+	// how often the stale subscription watchdog checks the last notification time
+	SUB_WATCHDOG_INTERVAL = 1 * time.Minute
 )
 
 type EventType int
@@ -48,6 +57,9 @@ type routebeat struct {
 	httpClient *http.Client
 	subClient  *graphql.SubscriptionClient
 	subIds     []string
+
+	// unix nano time of the last subscription notification received
+	lastNotificationTime atomic.Int64
 }
 
 // New creates an instance of routebeat.
@@ -112,15 +124,28 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	// create the subscription client whether it's needed or not
 	bt.subClient = graphql.
 		NewSubscriptionClient(getWssURL(bt.config.API.Url)).
+		WithWebsocketConnectionIdleTimeout(SUB_WEBSOCKET_IDLE_TIMEOUT).
 		WithWebSocketOptions(graphql.WebsocketOptions{
 			HTTPClient: bt.httpClient,
 		}).
 		OnError(func(sc *graphql.SubscriptionClient, err error) error {
+			if sc.IsWebsocketConnectionIdleTimeout(err) {
+				logp.Warn("subscription went stale (idle timeout)! re-initiating...")
+				// returning nil tells the client's internal loop to attempt a retry
+				return nil
+			}
+
 			logp.Err("subscription client OnError: %v", err)
 			return err
 		}).
 		OnDisconnected(func() {
 			logp.Warn("subscription client disconnected")
+		}).
+		OnConnected(func() {
+			logp.Info("subscription client connected")
+		}).
+		OnSubscriptionComplete(func(sub graphql.Subscription) {
+			logp.Info("subscription terminated %s", sub.GetID())
 		})
 	defer bt.subClient.Close()
 
@@ -141,6 +166,9 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 
 		// start the subscriptions in the background make it reconnect on connnection lost
 		go bt.SubscriptionClientRun()
+
+		// close and reconnect the subscription client if no notifications arrive for too long
+		go bt.SubscriptionWatchdog()
 	}
 
 	// block here until the application is terminated
@@ -190,10 +218,51 @@ func (bt *routebeat) SubscriptionClientRun() {
 	}
 }
 
+// SubscriptionWatchdog monitors the time since the last notification was received and
+// closes the subscription client when it exceeds api.sub_reconnect_idle. Closing cancels
+// the running client, so SubscriptionClientRun() calls Run() again, which reconnects and
+// resubscribes to the subscriptions.
+func (bt *routebeat) SubscriptionWatchdog() {
+	if bt.config.API.SubReconnectIdle <= 0 {
+		logp.Info("GraphQL subscription watchdog disabled (api.sub_reconnect_idle <= 0)")
+		return
+	}
+
+	ticker := time.NewTicker(SUB_WATCHDOG_INTERVAL)
+	defer ticker.Stop()
+
+	// initialize the last notification time to now so that we don't
+	// immediately close the subscription client on startup before we receive any notifications
+	bt.lastNotificationTime.Store(time.Now().UnixNano())
+
+	for {
+		select {
+		case <-bt.done:
+			logp.Warn("exiting GraphQL subscription watchdog routine")
+			return
+		case <-ticker.C:
+		}
+
+		last := time.Unix(0, bt.lastNotificationTime.Load())
+
+		if time.Since(last) > bt.config.API.SubReconnectIdle {
+			logp.Info("closing subscription client to reconnect, last notification received at: %s", last.Format(time.RFC3339))
+
+			if err := bt.subClient.Close(); err != nil {
+				logp.Err("error closing subscription client: %v", err)
+			}
+
+			// reset the last notification time to now after closing the subscription client so
+			// that we don't immediately close it again in the next tick before we receive any notifications
+			bt.lastNotificationTime.Store(time.Now().UnixNano())
+		}
+	}
+}
+
 func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, done chan struct{}) {
 	// variables
 	variables := map[string]any{
-		"tag":   tag,
+		"tag":   strconv.Quote(tag),
 		"limit": bt.config.API.Limit,
 	}
 
@@ -234,7 +303,7 @@ func (bt *routebeat) QueryTerminalsRoutine(client *graphql.Client, tag string, d
 func (bt *routebeat) SubscribeTerminals(query any, tag string) (string, error) {
 	// variables
 	v := map[string]any{
-		"tag": tag,
+		"tag": strconv.Quote(tag),
 	}
 
 	// subscribe to a query and run a callback function to process the messages
@@ -242,6 +311,9 @@ func (bt *routebeat) SubscribeTerminals(query any, tag string) (string, error) {
 		if err != nil {
 			return err
 		}
+
+		// update the last notification time to now whenever a new notification is received
+		bt.lastNotificationTime.Store(time.Now().UnixNano())
 
 		data := SubscriptionTerminalsUpdated{}
 
