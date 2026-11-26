@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/thetherington/routebeat/beater/notify"
 	"github.com/thetherington/routebeat/beater/schedule"
 	routeCfg "github.com/thetherington/routebeat/config"
@@ -42,9 +41,7 @@ func TestRecheckRouteLogs(t *testing.T) {
 		miss = "ScheduleRecheckMiss"
 	)
 
-	if err := logp.DevelopmentSetup(logp.ToObserverOutput(), logp.WithSelectors(hit, miss)); err != nil {
-		t.Fatal(err)
-	}
+	logs := observeLogs(t, hit, miss)
 
 	start, end := activeWindow()
 	original := &schedule.BusRouting{Pri: "POLL_PRI", Sec: "POLL_SEC"}
@@ -86,7 +83,7 @@ func TestRecheckRouteLogs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resetCaches()
-			logp.ObserverLogs().TakeAll()
+			logs.TakeAll()
 
 			if tt.polled {
 				now := time.Now().UTC()
@@ -98,7 +95,7 @@ func TestRecheckRouteLogs(t *testing.T) {
 			recheckBeat(t, srv.URL, 0).recheckRoute("BUS1", "SRC_NEW", original, SourceCache)
 
 			var got []string
-			for _, entry := range logp.ObserverLogs().TakeAll() {
+			for _, entry := range logs.TakeAll() {
 				if entry.LoggerName == hit || entry.LoggerName == miss {
 					got = append(got, entry.LoggerName+": "+entry.Message)
 				}

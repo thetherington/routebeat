@@ -8,7 +8,20 @@ import (
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/mapstr"
+	"go.uber.org/zap/zaptest/observer"
 )
+
+// observeLogs sends the global logp logger to an in-memory observer at debug level, with the selectors enabled
+func observeLogs(t *testing.T, selectors ...string) *observer.ObservedLogs {
+	t.Helper()
+
+	core, logs := observer.New(logp.DebugLevel.ZapLevel())
+	if err := logp.ConfigureWithCore(logp.Config{Level: logp.DebugLevel, Selectors: selectors}, core); err != nil {
+		t.Fatal(err)
+	}
+
+	return logs
+}
 
 // recordingClient is a beat.Client that keeps the published events
 type recordingClient struct{ events []beat.Event }
@@ -18,9 +31,7 @@ func (c *recordingClient) PublishAll(e []beat.Event) { c.events = append(c.event
 func (c *recordingClient) Close() error              { return nil }
 
 func TestBuildEventsProcessResultsLogs(t *testing.T) {
-	if err := logp.DevelopmentSetup(logp.ToObserverOutput(), logp.WithSelectors("ProcessResults.*")); err != nil {
-		t.Fatal(err)
-	}
+	logs := observeLogs(t, "ProcessResults.*")
 
 	useNotifier(t, stubNotifier{})
 
@@ -50,7 +61,7 @@ func TestBuildEventsProcessResultsLogs(t *testing.T) {
 		t.Run(tt.eventType.String(), func(t *testing.T) {
 			resetCaches()
 			seedSchedule()
-			logp.ObserverLogs().TakeAll()
+			logs.TakeAll()
 
 			bt := newTestBeat(t, beatOpts{})
 			bt.client = &recordingClient{}
@@ -58,7 +69,7 @@ func TestBuildEventsProcessResultsLogs(t *testing.T) {
 			bt.BuildEvents("MES", edges(), tt.eventType)
 
 			var found bool
-			for _, entry := range logp.ObserverLogs().TakeAll() {
+			for _, entry := range logs.TakeAll() {
 				if strings.HasPrefix(entry.Message, "Tag: ") {
 					found = true
 					if entry.Message != tt.want {
@@ -114,16 +125,14 @@ func TestProcessResultsSelector(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.selectors[0], func(t *testing.T) {
-			if err := logp.DevelopmentSetup(logp.ToObserverOutput(), logp.WithSelectors(tt.selectors...)); err != nil {
-				t.Fatal(err)
-			}
+			logs := observeLogs(t, tt.selectors...)
 
 			for _, et := range []EventType{Query, Notification} {
 				logp.Debug(processResultsSelector(et), "%s", et)
 			}
 
 			var got []string
-			for _, entry := range logp.ObserverLogs().TakeAll() {
+			for _, entry := range logs.TakeAll() {
 				got = append(got, entry.LoggerName+": "+entry.Message)
 			}
 
