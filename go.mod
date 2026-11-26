@@ -19,7 +19,7 @@ require (
 	github.com/cavaliergopher/rpm v1.3.0
 	github.com/elastic/beats/v7 v7.17.29-0.20250528095053-c7b51806263b
 	github.com/elastic/elastic-agent-libs v0.47.0
-	github.com/hasura/go-graphql-client v0.14.3
+	github.com/hasura/go-graphql-client v0.16.0
 	github.com/magefile/mage v1.17.2
 	github.com/mitchellh/gox v1.0.1
 	github.com/pierrre/gotestcover v0.0.0-20160517101806-924dca7d15f0
