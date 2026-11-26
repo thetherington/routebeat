@@ -17,7 +17,7 @@
       required: false
       description: >
         Magnum Destination Is a Subscription
-    - name: dstIsSub
+    - name: dstIsDst
       type: boolean
       required: false
       description: >
@@ -27,6 +27,11 @@
       required: false
       description: >
         Magnum Destination Type
+    - name: dstTags
+      type: keyword
+      required: false
+      description: >
+        All tags on the Magnum Destination
     - name: dstTag
       type: keyword
       required: false
@@ -36,7 +41,7 @@
       type: keyword
       required: false
       description: >
-        Type of event query, notification or log
+        Type of event: query or notification
     - name: destinationLabel
       type: keyword
       required: false

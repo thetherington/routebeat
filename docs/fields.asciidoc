@@ -15701,6 +15701,18 @@ required: False
 *`dstIsSub`*::
 +
 --
+Magnum Destination Is a Subscription
+
+
+type: boolean
+
+required: False
+
+--
+
+*`dstIsDst`*::
++
+--
 Magnum Destination Is a Destination
 
 
@@ -15714,6 +15726,18 @@ required: False
 +
 --
 Magnum Destination Type
+
+
+type: keyword
+
+required: False
+
+--
+
+*`dstTags`*::
++
+--
+All tags on the Magnum Destination
 
 
 type: keyword
@@ -15737,7 +15761,7 @@ required: False
 *`eventType`*::
 +
 --
-Type of event query, notification or log
+Type of event: query or notification
 
 
 type: keyword
