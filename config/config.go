@@ -50,12 +50,12 @@ type DevFlags struct {
 }
 
 type Config struct {
-	Period            time.Duration  `config:"period"`
-	Tags              []string       `config:"tags"`
-	PhysicalRouteTags []string       `config:"physical_route_tags"`
-	Mapping           *Mapping       `config:"mapping"`
-	API               MagnumAPI      `config:"api"`
-	ES                *Elasticsearch `config:"elasticsearch"`
+	Period            time.Duration `config:"period"`
+	Tags              []string      `config:"tags"`
+	PhysicalRouteTags []string      `config:"physical_route_tags"`
+	Mapping           *Mapping      `config:"mapping"`
+	API               MagnumAPI     `config:"api"`
+	ES                Elasticsearch `config:"elasticsearch"`
 }
 
 var DefaultConfig = Config{
@@ -72,5 +72,11 @@ var DefaultConfig = Config{
 			TokenURL:     "https://129.153.131.121/auth/realms/magnum/protocol/openid-connect/token",
 		},
 		SubReconnectIdle: 120 * time.Minute,
+	},
+	ES: Elasticsearch{
+		Address: "http://127.0.0.1:9200", // routebeat usually runs on an elasticsearch node
+		Index:   "log-syslog-informational-*",
+		Delay:   1 * time.Minute,
+		Window:  45 * time.Second,
 	},
 }

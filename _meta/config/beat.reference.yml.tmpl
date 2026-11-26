@@ -21,10 +21,10 @@ routebeat:
 
 
   elasticsearch:
-    # Elasticsearch server node url
+    # Elasticsearch server node url (default http://127.0.0.1:9200, the local node)
     address: "http://127.0.0.1:9200"
 
-    # Index pattern to query for syslog data
+    # Index pattern to query for syslog data (default log-syslog-informational-*)
     index: "log-syslog-informational-*"
 
     # (optional) Authentication credentials - either API key or username/password.
@@ -44,10 +44,10 @@ routebeat:
     # Whether to strictly follow the index pattern wildcard or replace it with the current date. Setting to false will replace the wildcard with the current date, and yesterday
     strict: false
     
-    # Delay to perform log analysis, recommend 1 minute to allow for log ingesting before ES queries
+    # Delay to perform log analysis, to allow for log ingesting before ES queries (default 1m)
     delay: 1m
 
-    # Window to match logs with the route notification. 
+    # Window to match logs with the route notification (default 45s, must be greater than 0)
     window: 45s
 
     # Sweeping unmatched routes with unmatched logs.  enable to sweep unmatched routes with unmatched logs, disable to only match routes with logs within the window.
@@ -70,5 +70,5 @@ routebeat:
       client_secret: "<secret key>"
       token_url: "https://<IP</auth/realms/magnum/protocol/openid-connect/token"
   
-    # Defines the idle duration after which the subscription client will be closed to test reconnect logic
+    # Reconnect the subscription after this long without a notification (watchdog). 0 disables it
     sub_reconnect_idle: 120m

@@ -21,19 +21,33 @@ routebeat:
 
 
   elasticsearch:
-    # Elasticsearch server node url
+    # Elasticsearch server node url (default http://127.0.0.1:9200, the local node)
     address: "http://127.0.0.1:9200"
 
-    # Index pattern to query for syslog data
+    # Index pattern to query for syslog data (default log-syslog-informational-*)
     index: "log-syslog-informational-*"
+
+    # (optional) Authentication credentials - either API key or username/password.
+    # api_key takes precedence when both are set
+    #api_key: "id:api_key"
+    #username: "elastic"
+    #password: "changeme"
+
+    # (optional) TLS settings for https addresses
+    #ssl:
+      # PEM encoded CA certificate used to verify the server, in addition to the system CAs
+      #ca_cert: "/etc/routebeat/ca.crt"
+
+      # Skip server certificate verification (not recommended)
+      #insecure_skip_verify: false
 
     # Whether to strictly follow the index pattern wildcard or replace it with the current date. Setting to false will replace the wildcard with the current date, and yesterday
     strict: false
     
-    # Delay to perform log analysis, recommend 1 minute to allow for log ingesting before ES queries
+    # Delay to perform log analysis, to allow for log ingesting before ES queries (default 1m)
     delay: 1m
 
-    # Window to match logs with the route notification. 
+    # Window to match logs with the route notification (default 45s, must be greater than 0)
     window: 45s
 
     # Sweeping unmatched routes with unmatched logs.  enable to sweep unmatched routes with unmatched logs, disable to only match routes with logs within the window.
@@ -55,6 +69,9 @@ routebeat:
       client_id: "<client id>"
       client_secret: "<secret key>"
       token_url: "https://<IP</auth/realms/magnum/protocol/openid-connect/token"
+  
+    # Reconnect the subscription after this long without a notification (watchdog). 0 disables it
+    sub_reconnect_idle: 120m
 # ================================== General ===================================
 
 # The name of the shipper that publishes the network data. It can be used to group
@@ -473,7 +490,7 @@ output.elasticsearch:
   # Configure cipher suites to be used for SSL connections
   #ssl.cipher_suites: []
 
-  # Configure curve types for ECDHE-based cipher suites
+  # Configure curve types for TLS key exchange
   #ssl.curve_types: []
 
   # Configure what types of renegotiation are supported. Valid options are
@@ -621,7 +638,7 @@ output.elasticsearch:
   # Configure cipher suites to be used for SSL connections
   #ssl.cipher_suites: []
 
-  # Configure curve types for ECDHE-based cipher suites
+  # Configure curve types for TLS key exchange
   #ssl.curve_types: []
 
   # Configure what types of renegotiation are supported. Valid options are
@@ -834,7 +851,7 @@ output.elasticsearch:
   # Configure cipher suites to be used for SSL connections
   #ssl.cipher_suites: []
 
-  # Configure curve types for ECDHE-based cipher suites
+  # Configure curve types for TLS key exchange
   #ssl.curve_types: []
 
   # Configure what types of renegotiation are supported. Valid options are
@@ -1013,7 +1030,7 @@ output.elasticsearch:
   # Configure cipher suites to be used for SSL connections
   #ssl.cipher_suites: []
 
-  # Configure curve types for ECDHE-based cipher suites
+  # Configure curve types for TLS key exchange
   #ssl.curve_types: []
 
   # Configure what types of renegotiation are supported. Valid options are
@@ -1336,7 +1353,7 @@ setup.kibana:
   # Configure cipher suites to be used for SSL connections
   #ssl.cipher_suites: []
 
-  # Configure curve types for ECDHE-based cipher suites
+  # Configure curve types for TLS key exchange
   #ssl.curve_types: []
 
   # Configure what types of renegotiation are supported. Valid options are
@@ -1589,7 +1606,7 @@ logging.files:
   # Configure cipher suites to be used for SSL connections
   #ssl.cipher_suites: []
 
-  # Configure curve types for ECDHE-based cipher suites
+  # Configure curve types for TLS key exchange
   #ssl.curve_types: []
 
   # Configure what types of renegotiation are supported. Valid options are

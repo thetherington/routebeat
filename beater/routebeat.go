@@ -69,15 +69,33 @@ func New(b *beat.Beat, cfg *config.C) (beat.Beater, error) {
 		return nil, errors.New("beat requires atleast 1 physical route tag in the configuration")
 	}
 
-	// Validate if mapping is enabled then the nameset is not blank
-	if c.Mapping != nil && c.Mapping.Nameset == "" {
-		return nil, errors.New("nameset cannot be blank if mapping is enabled")
+	// Mapping is required: its nameset provides the bus names used for destinationLabel
+	// and as the key of the bus routing cache
+	if c.Mapping == nil || c.Mapping.Nameset == "" {
+		return nil, errors.New("beat requires mapping.nameset in the configuration")
+	}
+
+	// Every event is analysed against the syslog data, so the address cannot be blanked out
+	if c.ES.Address == "" {
+		return nil, errors.New("elasticsearch.address cannot be blank")
+	}
+
+	if c.ES.Index == "" {
+		return nil, errors.New("elasticsearch.index cannot be blank")
+	}
+
+	if c.ES.Window <= 0 {
+		return nil, errors.New("elasticsearch.window must be greater than 0")
+	}
+
+	if c.ES.Delay < 0 {
+		return nil, errors.New("elasticsearch.delay cannot be negative")
 	}
 
 	done := make(chan struct{})
 
-	// Create the elasticsearch client handler if ES configuration is provided in the config
-	if c.ES != nil {
+	// Create the elasticsearch client handler
+	{
 		var err error
 		db, err = analytics.NewClient(&analytics.ClientConfig{
 			Address:               c.ES.Address,
@@ -212,13 +230,19 @@ func (bt *routebeat) Run(b *beat.Beat) error {
 	)
 
 	// start a go routine to monitor the time since the last notification was received
-	// and close the subscription client if it has been more than 60 minutes since the
-	// last notification was received to resubscribe to the subscriptions and run the reconnect logic of the subscription client
+	// and close the subscription client if it has been longer than sub_reconnect_idle since the
+	// last notification was received to resubscribe to the subscriptions and run the reconnect logic of the subscription client.
+	// A sub_reconnect_idle of 0 (or less) disables the watchdog.
 	go func() {
+		if bt.config.API.SubReconnectIdle <= 0 {
+			logp.Info("subscription reconnect watchdog disabled (sub_reconnect_idle is 0)")
+			return
+		}
+
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 
-		fmt.Println("reconnect", bt.config.API.SubReconnectIdle)
+		logp.Info("subscription reconnect watchdog enabled, sub_reconnect_idle: %s", bt.config.API.SubReconnectIdle)
 
 		// initialize the last notification time to now so that we don't
 		// immediately close the subscription client on startup before we receive any notifications

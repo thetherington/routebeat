@@ -36,7 +36,7 @@ func Package() {
 	devtools.UseElasticBeatOSSPackaging()
 
 	mg.Deps(Update)
-	mg.Deps(build.CrossBuild, build.CrossBuildGoDaemon)
+	mg.Deps(build.CrossBuild)
 	mg.SerialDeps(devtools.Package)
 }
 
@@ -86,11 +86,6 @@ func Build() error {
 // CrossBuild cross-builds the beat for all target platforms.
 func CrossBuild() error {
 	return build.CrossBuild()
-}
-
-// BuildGoDaemon builds the go-daemon binary (use crossBuildGoDaemon).
-func BuildGoDaemon() error {
-	return build.BuildGoDaemon()
 }
 
 // GolangCrossBuild build the Beat binary inside of the golang-builder.

@@ -1,74 +1,98 @@
-################### {Beat} Configuration Example #########################
+################### Routebeat Configuration #########################
 
-############################# {Beat} ######################################
+############################# Routebeat ######################################
 
 routebeat:
-  # Defines how often an event is sent to the output
+  # Not used on this branch (there is no periodic polling); kept for compatibility with master
   period: 30s
 
-  # Tags to collect route data from
+  # (required) Magnum tags of the destinations whose routes are measured
   tags:
     - "MES"
     - "IPAN"
 
-  # Tags for physical route subscriptions to map sub destinations to physical devices
+  # (required) Magnum tags of the SLAB physical destinations. Their physical routes fill the
+  # bus routing cache (bus -> SLAB device and output) used to find each route's SLAB logs
   physical_route_tags:
     - "SLAB"
 
-  # (optional) Nameset to select from for the "source" and "destination", value and default value for emptry route
+  # (required) Nameset whose names are the bus names. Used for destinationLabel / sourceLabel
+  # and as the bus routing cache key. "nameset" must match the Magnum nameset name exactly
   mapping:
     nameset: "Broadview"
+    # Label used when a terminal has no name in the nameset, or nothing is routed
     default: ""
 
-
+  # Elasticsearch connection used to read the syslog data (separate from the output below)
   elasticsearch:
-    # Elasticsearch server node url
+    # Elasticsearch server node url (default http://127.0.0.1:9200, the local node)
     address: "http://10.9.0.69:9200"
 
-    # Index pattern to query for syslog data
+    # Index pattern holding the Magnum (magrtrsrv) logs (default log-syslog-informational-*)
+    # The scheduler, SLAB and magclientsrv index names are fixed in code
     index: "log-syslog-informational-*"
 
-    # Whether to strictly follow the index pattern wildcard or replace it with the current date. Setting to false will replace the wildcard with the current date, and yesterday
+    # (optional) Authentication credentials - either API key or username/password.
+    # api_key takes precedence when both are set
+    #api_key: "id:api_key"
+    #username: "elastic"
+    #password: "changeme"
+
+    # (optional) TLS settings for https addresses
+    #ssl:
+      # PEM encoded CA certificate used to verify the server, in addition to the system CAs
+      #ca_cert: "/etc/routebeat/ca.crt"
+
+      # Skip server certificate verification (not recommended)
+      #insecure_skip_verify: false
+
+    # false: replace the index pattern wildcard with today's and yesterday's dates (YYYY.MM.dd)
+    # true: use the index patterns exactly as written (default false)
     strict: false
-    
-    # Delay to perform log analysis, recommend 1 minute to allow for log ingesting before ES queries
+
+    # Wait before analysing a route notification, so its syslog has reached Elasticsearch (default 1m)
     delay: 1m
 
-    # Window to match logs with the route notification. 
+    # How far the Magnum request log may be from the notification, and how long after the
+    # request a SLAB may log (default 45s, must be greater than 0)
     window: 45s
 
-    # Sweeping unmatched routes with unmatched logs.  enable to sweep unmatched routes with unmatched logs, disable to only match routes with logs within the window.
-    # helps use unmatched logs due to anomoly issues with syslog generation with magnum
+    # When no Magnum request log is within the window, use the oldest unused request log from
+    # the last 30 minutes instead (event gets swept: true). Helps when Magnum logs a route
+    # without a matching notification (default false)
     sweeping: true
 
     dev:
-      # Whether to use the log ingest timestamp instead of the log event timestamp for matching with route notifications. This can help with log timestamp issues in magnum.
+      # Use the SLAB logs' ingest time (@timestamp) instead of device.timestamp (default false)
       # use_log_ingest_timestamp: true
 
-      # Whether to swap the timezone of slab logs from EST/EDT to UTC to match the scheduler logs timezone. This can help with log timestamp issues in magnum.
+      # Read SLAB device.timestamp as New York local time (EST/EDT) and convert it to UTC (default false)
       # swap_slab_log_timezone: true
 
-      # Whether to match the magClientSrv logs for this event by comparing the timestamps of the magClientSrv logs to the timestamp of the route request log and ensuring that they are within the configured time window and not in the cache.
+      # Also search for and link the magclientsrv "Received Dispatch Request." log (default false)
       # magclientsrv_logs: true
 
   # Magnum API
   api:
+    # Magnum GraphQL URL. The subscriptions use the same URL with the wss scheme
     url: "https://129.213.88.5/graphql/v1.1"
-    
-    # Get route notifications via the subscriptions
+
+    # Open the route and physical route subscriptions. Must be true on this branch (default true)
     notifications: true
 
-    # Limit the number of destinations in the API query results
+    # Not used on this branch (there is no periodic query); kept for compatibility with master
     limit: 2000
 
-    # Magnum OIDC Authentication
+    # Magnum OIDC Authentication (client credentials)
     auth:
       client_id: "insite-poller"
       client_secret: "gpJ2WSbjBOD1HoZxpTYGaqKdqeBD1mll"
       token_url: "https://129.213.88.5/auth/realms/magnum/protocol/openid-connect/token"
 
-    # Defines the idle duration after which the subscription client will be closed to test reconnect logic
+    # Watchdog: reconnect the subscription after this long without a notification.
+    # 0 disables it (default 120m)
     #sub_reconnect_idle: 5m
+
 # ================================== General ===================================
 
 # The name of the shipper that publishes the network data. It can be used to group
